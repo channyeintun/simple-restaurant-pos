@@ -454,19 +454,64 @@ long-lived token.
 
 ## Status
 
-**Milestone 0 is done**: the monorepo, the copied skeleton, `0001_init.sql` and
-the seed, device claim, staff PIN switch, and `npm run dev` working end to end
-against `wrangler dev` with no cloud resources. The API surface is `/health`,
-`/auth/*`, `/staff/*` and `/realtime/*`, and nothing else yet.
+**V1 is complete.** All six milestones are in, and `npm run check` and
+`npm test` pass.
 
-What is still to come:
+| | | |
+| --- | --- | --- |
+| 0 | Scaffold | monorepo, `0001_init.sql`, seed, device claim, staff PIN switch |
+| 1 | Catalogue | products, categories, tables, staff, devices, the day's takings |
+| 2 | Waiter | two panes, product tiles, the persistent cart, rounds, print jobs |
+| 3 | Cashier | live open checks, voids, payments, the printer failure banner |
+| 4 | Agent | ESC/POS over TCP 9100, and the ticket it prints |
+| 5 | PWA | manifest, icons, service worker, add-to-home-screen, update prompt |
 
-| | |
-| --- | --- |
-| 1 | Catalogue — products, categories and tables, and the backoffice screens for them |
-| 2 | Waiter — the two-pane page, the cart, rounds, and print jobs |
-| 3 | Cashier — live open checks, voids, payments, the printer failure banner |
-| 4 | Agent — ESC/POS on the LAN, and the ticket it prints |
-| 5 | PWA polish — manifest, icons, service worker, install |
+### The API, whole
 
-`npm run check` and `npm test` pass at the end of every one of them.
+Everything behind the device gate needs a claimed tablet; the middle column is
+what it needs on top of that.
+
+| Route | Needs | |
+| --- | --- | --- |
+| `GET /health` | — | is the Worker up, and is realtime configured |
+| `POST /auth/claim` | — | redeem a device link |
+| `GET /auth/me` | device | the session bootstrap: identity **and** currency and offset |
+| `POST /auth/logout` | — | throw the credential away |
+| `POST /realtime/ticket` | device | two-minute ticket for the stream |
+| `GET /realtime/stream` | ticket | the SSE stream, channel `restaurant` |
+| `GET /staff` | device | the names on the PIN screen |
+| `POST /staff/switch` · `/signout` | device | four digits in, a re-minted token out |
+| `GET /staff/roster` · `POST /staff` · `PATCH /staff/:id` · `PUT /staff/:id/pin` | admin | the roster |
+| `GET /tables` · `/categories` · `/products` | staff | the live menu and floor; `?include=all` needs admin |
+| `POST`/`PATCH` on those three | admin | edit them — there is no `DELETE` anywhere |
+| `GET /checks` | staff | every open check, for the board and the tables grid |
+| `GET /checks/:id` · `GET /checks/by-table/:id` | staff | one check, whole |
+| `POST /rounds` | staff | **send to kitchen** — find-or-open, in one batch |
+| `POST /checks/:id/items/:itemId/void` | staff | strike a line off, and tell the kitchen |
+| `POST /checks/:id/pay` | cashier/admin | settle and close, at a total the cashier agreed to |
+| `GET /print-jobs` | device | the queue, with each ticket already rendered |
+| `POST /print-jobs/:id/printed` · `/failed` | device | the agent's acks |
+| `POST /print-jobs/:id/retry` | cashier/admin | the banner's Retry |
+| `GET /devices` · `POST /devices` · `/:id/claim-link` · `/:id/revoke` | admin | the tablets |
+| `GET /reports/sales/today` | admin | the one report there is |
+
+### What is tested, and what that means
+
+`npm test` runs four suites and needs no server, no socket and no Redis:
+
+- **`shared/test/logic.test.ts`** and **`cargo test -p pos-core`** — the twin
+  rules, case for case. Money, the fixed-offset clock, check totals and what a
+  kitchen ticket says, written twice and held to the same numbers.
+- **`web/test/board.test.ts`** — the cashier's event reducer. It exists because
+  local development runs with no Upstash credentials, so the stream never fires
+  on a developer's machine and these cases would otherwise first be tried on a
+  Saturday night by a cashier.
+- **`agent/test/ticket.test.ts`** — the ESC/POS bytes. The only part of the
+  printing path checkable without a printer, and the part where a mistake is
+  silent.
+- **`cargo test -p pos-api`** — the Worker's own: the token format, the channel
+  allowlist, and every request body refused in the exact words zod would use.
+
+What is *not* covered by any of them is the wiring: routes, D1 and the browser.
+That is checked by hand against `wrangler dev` at the end of each milestone, and
+the commit that closes one says what was exercised.

@@ -84,6 +84,16 @@ export interface Navigation {
   hash(): string;
   push(path: string): void;
   replace(path: string): void;
+  /**
+   * Load the page again from scratch.
+   *
+   * Not navigation — nowhere changes — but it belongs to the same capability
+   * for the same reason everything else here does: it is `window.location`, and
+   * components do not touch `window`. Its one caller is the "a new version is
+   * ready" banner, which is the only thing in this app that ever wants the
+   * bundle replaced rather than the route changed.
+   */
+  reload(): void;
   /** True when this app has somewhere of its own to go back to. */
   canGoBack(): boolean;
   /** Step back one entry. Returns false when there was nothing to step to. */
@@ -117,6 +127,51 @@ export interface Visibility {
   onInteraction(listener: () => void): () => void;
 }
 
+/**
+ * Adding the app to a tablet's home screen, and noticing when a deploy has
+ * landed under one.
+ *
+ * Both are here for the usual reason — `beforeinstallprompt` and
+ * `navigator.serviceWorker` are browser APIs and components do not touch those
+ * — and both are genuinely awkward in ways that are better solved once.
+ *
+ * The install prompt is an event the browser fires **at most once**, whenever
+ * it decides the app is installable, and the only way to show it later is to
+ * have kept the event object. A component that happened not to be mounted at
+ * that moment misses it forever. So it is captured at module scope, before any
+ * component exists, and offered to whoever asks afterwards.
+ */
+export interface Install {
+  /**
+   * Whether the browser is currently offering to install. Subscribing also
+   * reports the answer immediately, so a screen that mounts after the event
+   * still learns about it.
+   *
+   * False on iOS, on Firefox, in an already-installed app, and on any browser
+   * that has decided not to offer — which is most of the time. The control is
+   * hidden in all of those cases rather than shown and disabled: an install
+   * button that cannot install is a support call.
+   */
+  subscribe(listener: (available: boolean) => void): () => void;
+  /** Show the browser's own prompt. Resolves true when it was accepted. */
+  prompt(): Promise<boolean>;
+}
+
+/**
+ * A new build has taken over from under a running page.
+ *
+ * Matters here more than on an ordinary site: these tablets are installed apps
+ * that are never closed, so without something saying so a device can go on
+ * running a bundle from a fortnight ago against a Worker deployed this morning
+ * — which is exactly the skew `api/auth.ts` parses its responses to survive.
+ *
+ * The listener fires only when a worker replaces one that was **already
+ * controlling** the page. A first-ever registration also changes the
+ * controller, and telling somebody their brand-new install is out of date on
+ * its first launch would be nonsense.
+ */
+export type AppUpdated = (listener: () => void) => () => void;
+
 export interface Platform {
   storage: KeyValueStorage;
   clipboard: Clipboard;
@@ -125,6 +180,8 @@ export interface Platform {
   visibility: Visibility;
   /** Registers the service worker. Resolves false where unsupported. */
   registerServiceWorker(): Promise<boolean>;
+  install: Install;
+  onAppUpdated: AppUpdated;
   openExternal(url: string): void;
   openEventStream(url: string, handlers: EventStreamHandlers): EventStream;
   /**

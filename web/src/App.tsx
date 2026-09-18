@@ -6,6 +6,7 @@ import { ApiError, getToken, onUnauthorized } from './api/client.js';
 import { queryKeys, useMe } from './lib/queries.js';
 import { LanguageToggle } from './components/LanguageToggle.js';
 import { Logo } from './components/Logo.js';
+import { UpdateBanner } from './components/pwa.js';
 import { platform } from './platform/index.js';
 import { useLocale } from './state/locale.js';
 
@@ -170,6 +171,14 @@ export function App(props: RouteSectionProps) {
 
   return (
     <div class="app">
+      {/*
+        Above everything, including the boot splash's replacement, and outside
+        the `Switch` — so it reaches the claim screen and the PIN screen as well
+        as the three trees. A tablet that has been sitting on the PIN screen
+        since Tuesday is exactly the one most likely to be running an old
+        bundle, and it is also the one where reloading costs nothing at all.
+      */}
+      <UpdateBanner />
       <Show when={ready()} fallback={<Booting m={m()} visible={slow()} />}>
         <Switch>
           {/*

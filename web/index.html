@@ -28,12 +28,18 @@
     />
 
     <!--
-      PWA. The manifest asks for `landscape` because the waiter screen is two
-      panes side by side — tables on the left, the open table and its cart on
-      the right — and that is the shape it is designed at. The manifest only
-      governs an installed launch; the stylesheet still lays out for portrait,
-      which is what a tablet in a browser tab, or an OS that ignores the
-      preference, will give it.
+      PWA. The manifest asks for `any` orientation, not `landscape`.
+
+      Landscape is the shape the waiter screen is designed at — two panes side
+      by side, tables on the left and the open table with its cart on the right
+      — and it was the manifest's first answer for that reason. But `orientation`
+      is not a hint on Android: an installed app gets locked to it, and the
+      brief says portrait is *supported*, which a lock makes untrue. Half the
+      people who carry a tablet round a dining room carry it upright, the panes
+      wrap into one column by themselves, and the cashier and backoffice screens
+      are single-column anyway. Letting the device decide is the honest version
+      of "landscape first, portrait supported"; the stylesheet is what makes it
+      true.
     -->
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/icon-180.png" />

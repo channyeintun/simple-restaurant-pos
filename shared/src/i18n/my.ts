@@ -23,6 +23,9 @@ export const my: Messages = {
     cancel: 'မလုပ်တော့ပါ',
     close: 'ပိတ်မည်',
     somethingWrong: 'တစ်ခုခု မှားယွင်းသွားပါသည်',
+    install: 'ပင်မစာမျက်နှာသို့ ထည့်မည်',
+    updateReady: 'ဗားရှင်းအသစ် အသင့်ရှိပါသည်',
+    reload: 'ပြန်ဖွင့်မည်',
   },
 
   claim: {

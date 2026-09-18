@@ -19,6 +19,19 @@ export const en = {
     cancel: 'Cancel',
     close: 'Close',
     somethingWrong: 'Something went wrong',
+    /*
+     * The shell's two PWA lines.
+     *
+     * "Add to home screen" rather than "Install", because that is what the
+     * gesture is called on every tablet these run on and what the browser's own
+     * prompt will say next.
+     */
+    install: 'Add to home screen',
+    // "Ready", not "available": the new build is already downloaded, and the
+    // only thing between it and this tablet is a reload — which is something to
+    // do between tables rather than something to be nagged about.
+    updateReady: 'A new version is ready',
+    reload: 'Reload',
   },
 
   claim: {

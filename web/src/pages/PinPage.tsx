@@ -4,6 +4,7 @@ import { For, Match, Show, Switch, createSignal } from 'solid-js';
 import { ApiError } from '../api/client.js';
 import { switchStaff } from '../api/staff.js';
 import { LanguageToggle } from '../components/LanguageToggle.js';
+import { InstallButton } from '../components/pwa.js';
 import { Button, ErrorBanner } from '../components/ui.js';
 import { useStaff } from '../lib/queries.js';
 import { useApp } from '../state/app.js';
@@ -359,6 +360,15 @@ export function PinPage() {
         needs even while the rest of the screen is English.
       */}
       <LanguageToggle />
+
+      {/*
+        And the home-screen offer, under the language switcher, for the same
+        reason it is: both are settings that belong to the *device* rather than
+        to whoever is standing at it, and this is the one screen in the app that
+        is not in the middle of somebody's job. It renders as nothing at all
+        unless the browser is actually offering — see `InstallButton`.
+      */}
+      <InstallButton />
     </main>
   );
 }

@@ -1,4 +1,4 @@
-import type { EventStream, EventStreamHandlers, Platform } from './index.js';
+import type { AppUpdated, EventStream, EventStreamHandlers, Install, Platform } from './index.js';
 
 /**
  * Browser implementation of the platform seam. This is the only file in the
@@ -200,6 +200,9 @@ const navigation: Platform['navigation'] = {
     window.history.replaceState({}, '', path);
     notify();
   },
+  reload() {
+    window.location.reload();
+  },
   subscribe(listener) {
     listeners.add(listener);
     return () => listeners.delete(listener);
@@ -287,6 +290,90 @@ function dismissSplash(): void {
 
 /* --------------------------------------------------------- service worker */
 
+/* ---------------------------------------------------------------- install */
+
+/**
+ * The install prompt, captured before any component exists.
+ *
+ * `beforeinstallprompt` fires once, early, and the event object is the *only*
+ * way to show the prompt afterwards — so it is caught at module scope rather
+ * than in a component, which might not be mounted yet and would then miss it
+ * for the life of the page. `preventDefault` stops Chrome's own mini-infobar,
+ * because the app puts the offer somewhere deliberate: beside the language
+ * toggle on the PIN screen, which is what a tablet sits on between shifts.
+ */
+interface InstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  readonly userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
+
+let deferredInstall: InstallPromptEvent | null = null;
+const installListeners = new Set<(available: boolean) => void>();
+
+function announceInstall() {
+  for (const listener of [...installListeners]) listener(deferredInstall !== null);
+}
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstall = event as InstallPromptEvent;
+  announceInstall();
+});
+
+// Once it is installed there is nothing left to offer, and the browser will not
+// fire `beforeinstallprompt` again. Dropping the held event is what takes the
+// control off the screen.
+window.addEventListener('appinstalled', () => {
+  deferredInstall = null;
+  announceInstall();
+});
+
+const install: Install = {
+  subscribe(listener) {
+    installListeners.add(listener);
+    // Immediately, so a screen that mounts after the event still learns.
+    listener(deferredInstall !== null);
+    return () => installListeners.delete(listener);
+  },
+  async prompt() {
+    const event = deferredInstall;
+    if (!event) return false;
+    // Spent either way. The browser refuses a second `prompt()` on the same
+    // event, so keeping it would leave a button that silently does nothing.
+    deferredInstall = null;
+    announceInstall();
+    try {
+      await event.prompt();
+      const { outcome } = await event.userChoice;
+      return outcome === 'accepted';
+    } catch {
+      return false;
+    }
+  },
+};
+
+/* ----------------------------------------------------------------- update */
+
+/**
+ * A new build took over from under a running page.
+ *
+ * `controllerchange` is the signal, and the guard is the whole subtlety: it
+ * also fires the first time a service worker ever claims this page, and telling
+ * somebody their brand-new install is out of date on its first launch would be
+ * nonsense. Sampling `navigator.serviceWorker.controller` when the listener is
+ * registered — before any of this has had a chance to change — is what tells
+ * "replaced" from "arrived".
+ */
+const onAppUpdated: AppUpdated = (listener) => {
+  if (!('serviceWorker' in navigator)) return () => {};
+  const wasControlled = navigator.serviceWorker.controller !== null;
+  const handler = () => {
+    if (wasControlled) listener();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', handler);
+  return () => navigator.serviceWorker.removeEventListener('controllerchange', handler);
+};
+
 async function registerServiceWorker(): Promise<boolean> {
   if (!('serviceWorker' in navigator)) return false;
   try {
@@ -353,6 +440,8 @@ export const webPlatform: Platform = {
   viewTransition,
   visibility,
   registerServiceWorker,
+  install,
+  onAppUpdated,
   openExternal(url) {
     window.open(url, '_blank', 'noopener,noreferrer');
   },
