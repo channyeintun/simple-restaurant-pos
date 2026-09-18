@@ -14,6 +14,8 @@ import { useMe } from './lib/queries.js';
  */
 import { BackofficePage } from './pages/BackofficePage.js';
 import { CashierPage } from './pages/CashierPage.js';
+import { CashierBoard } from './pages/cashier/Board.js';
+import { CashierCheck } from './pages/cashier/CheckView.js';
 import { ClaimPage } from './pages/ClaimPage.js';
 import { PinPage } from './pages/PinPage.js';
 import { PickTable, WaiterPage } from './pages/WaiterPage.js';
@@ -134,7 +136,23 @@ export const routes: RouteDefinition[] = [
       { path: '*', component: PickTable },
     ],
   },
-  { path: ['/cashier', '/cashier/*'], component: CashierPage },
+  /*
+   * The cashier's is nested too, and for a different reason from the waiter's:
+   * not to keep a pane on screen, but to keep the **stream** open. `createLive`
+   * lives in `CashierPage`, which stays mounted while the board and one check
+   * swap underneath it — a connection opened in either child would be torn down
+   * and rebuilt, a ticket round trip and a fresh subscribe, every time somebody
+   * opened a check and came back.
+   */
+  {
+    path: '/cashier',
+    component: CashierPage,
+    children: [
+      { path: '/', component: CashierBoard },
+      { path: '/:checkId', component: CashierCheck },
+      { path: '*', component: CashierBoard },
+    ],
+  },
   { path: ['/backoffice', '/backoffice/*'], component: BackofficePage },
 
   /*

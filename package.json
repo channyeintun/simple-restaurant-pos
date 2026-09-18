@@ -24,9 +24,10 @@
     "db:migrate:remote": "npm run db:migrate:remote -w @pos/api",
     "deploy:api": "npm run deploy -w @pos/api",
     "deploy:web": "npm run deploy -w @pos/web",
-    "test": "npm run test:shared && npm run test:api",
+    "test": "npm run test:shared && npm run test:web && npm run test:api",
     "test:shared": "npm run test -w @pos/shared",
-    "test:api": "npm run test -w @pos/api"
+    "test:api": "npm run test -w @pos/api",
+    "test:web": "npm run test -w @pos/web"
   },
   "devDependencies": {
     "concurrently": "^9.2.4",

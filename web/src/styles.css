@@ -1128,3 +1128,62 @@ md-outlined-icon-button {
   font-family: var(--pos-typeface-numeric);
   font-weight: 700;
 }
+
+/* --------------------------------------------------------------- cashier */
+
+/*
+ * An open check, as a card on the board.
+ *
+ * Bigger than anything on the waiter's screen, because it is read from a few
+ * feet away: the cashier is looking for the table whose customer is standing at
+ * the till, so the name is the biggest thing on it and the total is the second.
+ */
+.check-card {
+  min-height: 7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px;
+  /* Amber, the same "open" pair the waiter's occupied tiles use. Every card on
+     this board is open by definition, so the tint is not distinguishing them
+     from each other — it is saying what the board *is*, which is the set of
+     things still owed for. */
+  background: var(--pos-open-container);
+  color: var(--pos-open);
+}
+
+.check-card-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.check-card-total {
+  font-size: 1.6rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.check-card-meta {
+  margin-top: auto;
+  font-size: 0.8rem;
+  /* Inherits the amber; a neutral grey on an amber card is muddier than the
+     same colour at a smaller size. */
+  opacity: 0.85;
+}
+
+/*
+ * The failure banner's own layout.
+ *
+ * `.error-banner` already carries the colours; this is only about the list of
+ * stuck tickets inside it not running into the Retry button beside it.
+ */
+.error-banner .section-head {
+  align-items: flex-start;
+}
+
+.error-banner .section-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}

@@ -12,6 +12,7 @@ shared/dist/
 web/dist/
 agent/dist/
 .logic-test.mjs
+web/.board-test.mjs
 
 # Rust — the Worker and the pure core crate it shares.
 # `Cargo.lock` is committed: this is a deployed binary, not a library, so the
