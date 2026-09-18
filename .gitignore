@@ -1,0 +1,31 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.local
+.env.production
+.env.*.local
+*.log
+.DS_Store
+shared/dist/
+web/dist/
+agent/dist/
+.logic-test.mjs
+
+# Rust — the Worker and the pure core crate it shares.
+# `Cargo.lock` is committed: this is a deployed binary, not a library, so the
+# build that ships should be the build that was tested.
+target/
+api/target/
+api/core/target/
+
+# `worker-build` writes the shim and the wasm bundle wrangler uploads.
+api/build/
+
+# The printer agent's own configuration, which names a printer on somebody's
+# LAN and is per-installation by definition.
+agent/agent.config.json
+
+# Working directories for coding agents.
+.claude/worktrees/

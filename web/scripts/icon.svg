@@ -1,0 +1,29 @@
+<!--
+  Source art for the PWA icons. Full-bleed background with the ball inside the
+  central 80%, so the same image works as a `maskable` icon on Android without
+  the corners of the ball being cropped by a circular mask.
+
+  Regenerate the PNGs with: npm run icons -w @futsal/web
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#386a20" />
+
+  <!-- Ball, centred and kept within the 80% maskable safe zone (r <= 205). -->
+  <g transform="translate(256 256)">
+    <circle r="150" fill="#f4fbef" />
+
+    <!-- Central pentagon -->
+    <path
+      d="M0 -74 L70 -23 L43 60 L-43 60 L-70 -23 Z"
+      fill="#1a3700" />
+
+    <!-- Seams running out to the edge from each pentagon vertex -->
+    <g stroke="#1a3700" stroke-width="15" stroke-linecap="round" fill="none">
+      <path d="M0 -74 L0 -150" />
+      <path d="M70 -23 L142 -46" />
+      <path d="M43 60 L88 121" />
+      <path d="M-43 60 L-88 121" />
+      <path d="M-70 -23 L-142 -46" />
+    </g>
+  </g>
+</svg>
