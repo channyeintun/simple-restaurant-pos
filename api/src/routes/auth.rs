@@ -68,10 +68,18 @@ async fn claim(req: &mut Request, env: &Env) -> ApiResult<Response> {
         return Err(spent_link());
     };
 
-    // Spend it. Guarded on the nonce so two simultaneous opens cannot both win:
-    // the check above and this update are not one operation, and a link pasted
-    // into a group chat gets opened twice within a second more often than it
-    // sounds like it would.
+    // Spend it, guarded on the nonce so that two simultaneous opens cannot both
+    // win. The read above and this update are not one operation, and a claim
+    // link gets opened twice within a second more often than it sounds like it
+    // would — a double tap on a tablet, or a page reloaded while the first
+    // request was still in flight. Both would find the row; only one can change
+    // it, and the other is told the link is spent, which it now is.
+    //
+    // `COALESCE` keeps the first `claimed_at` rather than overwriting it, so
+    // re-issuing a link for a tablet that is already set up — what an admin
+    // does after a device has been wiped — leaves the date it entered service
+    // alone. A second date for the same tablet is a worse answer to "when did
+    // we start using this one" than the first one is.
     let spent = db_handle
         .prepare(
             "UPDATE devices
@@ -94,12 +102,6 @@ async fn claim(req: &mut Request, env: &Env) -> ApiResult<Response> {
     if spent.meta()?.and_then(|meta| meta.changes) == Some(0) {
         return Err(spent_link());
     }
-
-    // `COALESCE` above keeps the first `claimed_at` rather than overwriting it,
-    // so re-issuing a link for a tablet that is already set up — the thing an
-    // admin does when a device has been wiped — leaves the date it entered
-    // service alone. A second date for the same tablet would be a worse answer
-    // to "when did we start using this one" than the first one is.
 
     // The device claim and nothing else. Nobody is signed in on a tablet that
     // has this second been claimed, which is exactly what the three `None`s

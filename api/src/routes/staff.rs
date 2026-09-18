@@ -324,10 +324,11 @@ mod tests {
         assert_eq!(message(r#"{"pin":"12a4"}"#), "pin: A PIN is 4 digits");
         // `$` without the `m` flag does not match before a trailing newline.
         assert_eq!(message("{\"pin\":\"1234\\n\"}"), "pin: A PIN is 4 digits");
-        // `\d` without the `u` flag is ASCII. These are Arabic-Indic digits,
-        // and they are also four *characters* but twelve bytes, which is why
-        // the length test runs after the digit test in the schema and why the
-        // Rust version tests both at once.
+        // `\d` without the `u` flag is ASCII, so these Arabic-Indic digits fail
+        // the character class in zod. They are four characters and twelve
+        // bytes, so on this side the byte-length test happens to reject them
+        // first — a different route to the same one message, which is the only
+        // thing either side promises.
         assert_eq!(message(r#"{"pin":"١٢٣٤"}"#), "pin: A PIN is 4 digits");
 
         // The object's own failure has an empty path, so no prefix.
