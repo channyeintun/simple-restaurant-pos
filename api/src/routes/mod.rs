@@ -1,17 +1,14 @@
-//! The routers, one module per file of `src/routes/`.
+//! The routers, one module per group of paths.
 //!
 //! Each exposes `route(...) -> Option<ApiResult<Response>>`: `None` means this
 //! router does not claim the path, so the dispatcher tries the next one in the
-//! order Hono would have. That is what keeps registration order — which is
-//! load-bearing here — visible in `lib.rs` rather than buried in a matcher.
+//! order `lib.rs` lists them. That is what keeps registration order — which is
+//! load-bearing here, because the device gate sits between two of these lines —
+//! visible in one screen of `lib.rs` rather than buried in a matcher.
+//!
+//! `None` also covers a path a router owns with a method it does not, which is
+//! how an unmatched request reaches the gate and answers 401 rather than 404.
 
 pub mod auth;
-pub mod claims;
-pub mod members;
-pub mod payment_details;
-pub mod payments;
-pub mod push;
 pub mod realtime;
-pub mod sessions;
-pub mod uploads;
-pub mod venues;
+pub mod staff;

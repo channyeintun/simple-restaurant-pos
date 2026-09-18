@@ -1,0 +1,26 @@
+{
+  "name": "@pos/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Types, zod schemas and pure helpers shared between the Worker API and the web frontend.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./events": "./src/events.ts",
+    "./money": "./src/money.ts",
+    "./config": "./src/config.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild test/logic.test.ts --bundle --platform=node --format=esm --outfile=.logic-test.mjs --log-level=error && node .logic-test.mjs"
+  },
+  "dependencies": {
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.2"
+  }
+}

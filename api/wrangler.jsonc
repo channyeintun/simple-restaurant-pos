@@ -1,0 +1,82 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "restaurant-pos-api",
+
+  // Rust, compiled to Wasm. `worker-build` writes the shim wrangler uploads
+  // alongside the module; `build/` is ignored, because it is output.
+  "main": "build/worker/shim.mjs",
+  // `worker-build` is pinned: the current release refuses any `worker` crate
+  // below 0.8, and this Worker is written against 0.6. The pin also fixes the
+  // `wasm-bindgen` the builder brings, which is why `Cargo.toml` pins the same
+  // version — the two have to agree or `wasm-bindgen` refuses the module.
+  "build": {
+    "command": "cargo install -q 'worker-build@^0.1' && worker-build --release"
+  },
+
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": {
+    "enabled": true
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "restaurant-pos",
+      // Replace with the id printed by `wrangler d1 create restaurant-pos`.
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "vars": {
+    // Origin allowed to call this API with credentials. Set to your Pages URL
+    // (or custom domain) before deploying. "*" is only sane for local dev.
+    "WEB_ORIGIN": "https://restaurant-pos.pages.dev",
+    // Public URL of the app. A device claim link is this plus the nonce, so it
+    // has to be the URL a tablet will actually open — an admin reads it off
+    // one screen and types it into another.
+    "APP_URL": "https://restaurant-pos.pages.dev",
+    // Cap on a single SSE stream before the server asks the client to
+    // reconnect. Keeps connections (and their Redis keepalives) bounded.
+    "SSE_MAX_DURATION_SECS": "600",
+
+    // Currency and time. These belong to the restaurant, not to the browser,
+    // and the Worker is the only place they are written down: the web app
+    // reads them from `GET /auth/me` once per session and caches them. There
+    // are deliberately no VITE_* mirrors — a build-time copy is a second
+    // source of truth, and the day it disagrees with this one the screen is
+    // quoting a price the bill does not charge. Nothing renders money or a
+    // time before the caller is authenticated, so there is no first paint to
+    // get wrong.
+    //
+    // wrangler `vars` are strings, which is why the two numbers are quoted;
+    // `env.rs` parses them the same way it parses SSE_MAX_DURATION_SECS.
+    "CURRENCY_CODE": "MMK",
+    // What is printed beside an amount. Myanmar writes it after the number:
+    // "2,500 Ks".
+    "CURRENCY_SYMBOL": "Ks",
+    // How many digits separate a minor unit from a major one. 0 for MMK — a
+    // kyat is not divided into anything, so a minor unit *is* a kyat and the
+    // integers in the database are the numbers on the bill.
+    "CURRENCY_MINOR_DIGITS": "0",
+    // Fixed offset from UTC, in minutes, applied wherever a stored timestamp
+    // is shown to a person or a service day is worked out. Minutes rather than
+    // hours because Myanmar is UTC+06:30 and half an hour does not fit in a
+    // count of hours. A constant rather than a timezone database: one
+    // restaurant, one offset, and no DST anywhere near it.
+    "TZ_OFFSET_MINUTES": "390"
+  }
+
+  // Secrets — set with `wrangler secret put <NAME>`, never in this file:
+  //   AUTH_SECRET              HMAC key for identity tokens *and* for the
+  //                            staff PIN hashes (32+ random bytes). Rotating
+  //                            it signs every tablet out and invalidates every
+  //                            PIN, which then have to be set again.
+  //   UPSTASH_REDIS_REST_URL   from the Upstash console
+  //   UPSTASH_REDIS_REST_TOKEN from the Upstash console
+  //
+  // Realtime degrades to polling if the Upstash pair is absent, so local dev
+  // works without an Upstash account.
+}

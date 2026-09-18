@@ -1,0 +1,19 @@
+# Copy to `.dev.vars` (gitignored) for local development.
+# In production these are set with `wrangler secret put <NAME>`.
+
+# A tablet signs in by redeeming a claim link. Mint the first one against the
+# seeded device:
+#   npm run claim:bootstrap -w @pos/api -- dev_counter --local
+
+# HMAC key for identity tokens, and the key the staff PIN hashes are keyed
+# with. Changing it signs every tablet out and makes every stored PIN stop
+# matching, so pick one per environment and leave it alone. Generate a real one
+# for production:
+#   openssl rand -base64 32
+AUTH_SECRET=dev-only-secret-do-not-use-in-production
+
+# Optional. Without these, realtime is disabled and the cashier page polls
+# every 5s instead — which is a perfectly usable way to develop, and means
+# local dev needs no Upstash account and no cloud resources at all.
+# UPSTASH_REDIS_REST_URL=https://xxx.upstash.io
+# UPSTASH_REDIS_REST_TOKEN=xxx

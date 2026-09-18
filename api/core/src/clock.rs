@@ -1,71 +1,75 @@
-//! Time helpers pinned to Asia/Ho_Chi_Minh (ICT).
+//! Local time, as a fixed offset from UTC.
 //!
-//! Ported from `shared/src/time.ts`. Vietnam has been on a fixed UTC+7 with no
-//! daylight saving since 1975, so the offset arithmetic is exact and needs no tz
-//! database. Everything crossing the API boundary is an ISO-8601 UTC instant,
-//! carried here as milliseconds since the epoch.
+//! Ported from `shared/src/time.ts`. Everything crossing the API boundary is an
+//! ISO-8601 UTC instant; these helpers exist for the handful of questions that
+//! are only meaningful in local terms — what the clock on the kitchen ticket
+//! says, and which day's takings a payment belongs to. Instants are carried
+//! here as milliseconds since the epoch, the way the rest of the port carries
+//! them.
 //!
-//! The civil-date conversion is written out rather than taken from a date crate
-//! because `from_zoned_parts` is called with a day number past the end of its
-//! month — `next_weekday` adds a delta to the day and lets the date normalise,
-//! exactly as `Date.UTC` does — and that behaviour has to be reproduced, not
-//! assumed.
-
-pub const TZ: &str = "Asia/Ho_Chi_Minh";
-/// Fixed ICT offset. Vietnam has observed no DST since 1975.
-pub const TZ_OFFSET_MINUTES: i64 = 7 * 60;
-
-/// Default kickoff: Friday 19:30 ICT, counting Sunday as 0.
-pub const DEFAULT_KICKOFF_WEEKDAY: i64 = 5;
-pub const DEFAULT_KICKOFF_HOUR: i64 = 19;
-pub const DEFAULT_KICKOFF_MINUTE: i64 = 30;
-
-/// How long after kickoff a session counts as finished. The cron uses it to mark
-/// sessions completed, the team board uses it to stop being a live control and
-/// start being a record, and registration closes on it too — one definition, so
-/// the three cannot disagree.
-pub const SESSION_RUNS_FOR_MS: i64 = 2 * 60 * 60 * 1000;
-
-/// Whether somebody can still put their name down for this session.
-///
-/// The window used to end at kickoff, which is the one moment it is most wrong:
-/// nobody is on their phone at 19:29, and a player who walks on at 19:35 was
-/// unregistered for a game they played all of — off the roster, out of the
-/// draw, and out of the split, so everybody else covered their share.
-///
-/// So it runs for as long as the game does. `SESSION_RUNS_FOR_MS` is the same
-/// window the cron calls a session finished at and the team board stops being a
-/// control at, which is what lets a latecomer be signed up and then dealt onto
-/// the smallest side while the game is still on.
-///
-/// It is not open forever, and that is the other half of the rule: a session
-/// that has been played is a record. Signing up for one weeks later would add a
-/// name to a roster nobody can check and a head to a bill already split. The
-/// status carries the same answer from the other direction — a cancelled game
-/// has nothing to join, and settling marks a session completed.
-pub fn registration_open(starts_at_ms: i64, status: &str, now_ms: i64) -> bool {
-    status == "scheduled" && now_ms < starts_at_ms + SESSION_RUNS_FOR_MS
-}
+//! ## Why an offset and not a timezone database
+//!
+//! Myanmar has been on a fixed UTC+06:30 since 1945, with no daylight saving,
+//! so the arithmetic below is exact — and it is the same arithmetic in Rust
+//! here and in TypeScript in `shared/src/time.ts`, which matters more than it
+//! sounds. The alternative is `Intl` with an IANA zone in the browser and a tz
+//! crate in the Worker: two implementations of one rule, shipped separately,
+//! each carrying data the other does not. A kitchen ticket printed at 00:05 and
+//! a day's sales total that disagree about which day it is would be a genuinely
+//! hard bug to see and an infuriating one to explain.
+//!
+//! ## Why minutes
+//!
+//! Because +06:30 is not a whole number of hours. A `TZ_OFFSET_HOURS` var would
+//! have to be `6.5`, which is a float describing a clock — the one place this
+//! codebase has already decided floats do not belong — and would round to six
+//! the first time somebody typed it into an integer column. Minutes are exact
+//! for every offset any inhabited zone has ever used, including the
+//! quarter-hour ones.
+//!
+//! The offset is a **parameter** on every function here, never a constant in
+//! this module. It comes from the Worker's `TZ_OFFSET_MINUTES` var;
+//! `DEFAULT_TZ_OFFSET_MINUTES` in `config.rs` holds the only literal copy of it
+//! on this side, and it is not a fallback. A default argument here would be a
+//! second source of truth, and the failure it produces is silent: every time
+//! would be half an hour out and still look like a time.
+//!
+//! ## Why the calendar is written out
+//!
+//! Futsal's version of this file was pinned to ICT and answered "which Friday
+//! is next?". None of that survives — a restaurant is open when it is open, and
+//! nothing here schedules anything — but its civil-date arithmetic does, for
+//! the reason it was written out in the first place: `from_zoned_parts` has to
+//! reproduce what `Date.UTC` does with a day past the end of its month, and
+//! that is behaviour to copy rather than to assume. A date crate would be a
+//! dependency, a tz database and a second opinion, for two dozen lines of
+//! integer division.
 
 const MS_PER_MINUTE: i64 = 60_000;
 const MS_PER_HOUR: i64 = 3_600_000;
 const MS_PER_DAY: i64 = 86_400_000;
 
-/// A wall-clock reading in Asia/Ho_Chi_Minh.
+/// A wall-clock reading. No weekday and no seconds: nothing a POS prints or
+/// groups by needs either, and a field nobody reads is a field that will be
+/// wrong when somebody finally does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZonedParts {
     pub year: i64,
+    /// 1-12
     pub month: i64,
+    /// 1-31
     pub day: i64,
+    /// 0-23
     pub hour: i64,
     pub minute: i64,
-    /// 0 = Sunday … 6 = Saturday
-    pub weekday: i64,
 }
 
-/// Break a UTC instant into its Asia/Ho_Chi_Minh wall-clock parts.
-pub fn to_zoned_parts(instant_ms: i64) -> ZonedParts {
-    let shifted = instant_ms + TZ_OFFSET_MINUTES * MS_PER_MINUTE;
+/// Break a UTC instant into its local wall-clock parts.
+pub fn to_zoned_parts(instant_ms: i64, offset_minutes: i64) -> ZonedParts {
+    let shifted = instant_ms + offset_minutes * MS_PER_MINUTE;
+    // Euclidean, not truncating: before 1970 — and, more to the point, at any
+    // negative offset in the small hours — `shifted / MS_PER_DAY` would round
+    // towards zero and land the reading on the wrong day with a negative hour.
     let days = shifted.div_euclid(MS_PER_DAY);
     let rest = shifted.rem_euclid(MS_PER_DAY);
     let (year, month, day) = civil_from_days(days);
@@ -75,185 +79,81 @@ pub fn to_zoned_parts(instant_ms: i64) -> ZonedParts {
         day,
         hour: rest / MS_PER_HOUR,
         minute: (rest % MS_PER_HOUR) / MS_PER_MINUTE,
-        weekday: (days + 4).rem_euclid(7),
     }
 }
 
-/// Interpret the given wall-clock parts as ICT and return the UTC instant.
+/// Interpret the given wall-clock parts as local time and return the UTC
+/// instant.
 ///
 /// `day` may run past the end of its month, and the date rolls forward the way
-/// `Date.UTC` rolls it. That is what `next_weekday` relies on.
-pub fn from_zoned_parts(year: i64, month: i64, day: i64, hour: i64, minute: i64) -> i64 {
-    let days = days_from_civil(year, month, 1) + (day - 1);
-    days * MS_PER_DAY + hour * MS_PER_HOUR + minute * MS_PER_MINUTE
-        - TZ_OFFSET_MINUTES * MS_PER_MINUTE
-}
-
-/// The next kickoff strictly after `from`.
+/// `Date.UTC` rolls it — `2026-09-31` is `2026-10-01` — which is what lets a
+/// caller add days without owning a calendar. Nothing in the POS does that
+/// today; it is kept because `start_of_zoned_day` is built on it and because
+/// the TypeScript twin gets the same normalisation free from `Date.UTC`, so a
+/// port that quietly refused an out-of-range day would be a difference waiting
+/// to be found.
 ///
-/// If today is the target weekday but kickoff has already passed, this rolls to
-/// next week — which is what the cron wants when it runs the morning after a
-/// session.
-pub fn next_weekday(from_ms: i64, weekday: i64, hour: i64, minute: i64) -> i64 {
-    let local = to_zoned_parts(from_ms);
-    let mut delta_days = (weekday - local.weekday).rem_euclid(7);
-    let mut candidate =
-        from_zoned_parts(local.year, local.month, local.day + delta_days, hour, minute);
-    if candidate <= from_ms {
-        delta_days += 7;
-        candidate = from_zoned_parts(local.year, local.month, local.day + delta_days, hour, minute);
-    }
-    candidate
+/// It takes the whole [`ZonedParts`] rather than futsal's five separate
+/// numbers: the only caller that wanted the pieces was `next_weekday`, which is
+/// gone, and `from_zoned_parts(to_zoned_parts(t, o), o)` is the round trip the
+/// tests want to write.
+pub fn from_zoned_parts(parts: ZonedParts, offset_minutes: i64) -> i64 {
+    let days = days_from_civil(parts.year, parts.month, 1) + (parts.day - 1);
+    days * MS_PER_DAY + parts.hour * MS_PER_HOUR + parts.minute * MS_PER_MINUTE
+        - offset_minutes * MS_PER_MINUTE
 }
 
-/// The upcoming Friday 19:30 ICT.
-pub fn next_friday_kickoff(from_ms: i64) -> i64 {
-    next_weekday(from_ms, DEFAULT_KICKOFF_WEEKDAY, DEFAULT_KICKOFF_HOUR, DEFAULT_KICKOFF_MINUTE)
-}
-
-/// `YYYY-MM-DD` of the instant, in ICT. Used to dedupe "one session per day".
-pub fn zoned_date_key(instant_ms: i64) -> String {
-    let p = to_zoned_parts(instant_ms);
+/// `YYYY-MM-DD` of the instant, locally. This is the key the day's sales total
+/// is grouped by.
+///
+/// It has to be the local day and not the UTC one, and at +06:30 the two differ
+/// for the last six and a half hours of every UTC day — which in Yangon is the
+/// evening service, the busiest part of it. Grouping by the UTC date would file
+/// everything after 17:30 UTC under the previous day and hand the manager a
+/// daily total that is wrong every single night.
+pub fn zoned_date_key(instant_ms: i64, offset_minutes: i64) -> String {
+    let p = to_zoned_parts(instant_ms, offset_minutes);
     format!("{}-{:02}-{:02}", p.year, p.month, p.day)
 }
 
-/// Midnight ICT that opened the day containing `instant`, as a UTC instant.
+/// Local midnight that opened the day containing `instant`, as a UTC instant.
 ///
-/// This is where home draws the line between the fixture at the top and the
-/// "previously" list underneath. It stops being today's game when today ends.
-pub fn start_of_zoned_day(instant_ms: i64) -> i64 {
-    let p = to_zoned_parts(instant_ms);
-    from_zoned_parts(p.year, p.month, p.day, 0, 0)
-}
-
-/// The clock, in whichever style the reader has asked for.
+/// The lower bound of the "today" queries — today's sales, today's checks — so
+/// that the range the database is asked for and the key the rows are grouped by
+/// are derived from the same definition of a day.
 ///
-/// AM/PM stays in Latin in both locales. No leading zero on a 12-hour clock:
-/// "07:30 PM" is a digital-watch reading, not something anybody says.
-pub fn clock_time(hour: i64, minute: i64, hour12: bool) -> String {
-    if !hour12 {
-        return format!("{hour:02}:{minute:02}");
-    }
-    let suffix = if hour < 12 { "AM" } else { "PM" };
-    let h = if hour % 12 == 0 { 12 } else { hour % 12 };
-    format!("{h}:{minute:02} {suffix}")
+/// A restaurant that serves past midnight will file the late tables under the
+/// next day. That is a real thing to decide about and this is not the place to
+/// decide it: a business day that starts at 06:00 is a policy, and it would
+/// belong in a var next to the offset rather than hidden in a helper called
+/// "start of day".
+pub fn start_of_zoned_day(instant_ms: i64, offset_minutes: i64) -> i64 {
+    let p = to_zoned_parts(instant_ms, offset_minutes);
+    from_zoned_parts(ZonedParts { hour: 0, minute: 0, ..p }, offset_minutes)
 }
 
-/// Weekday and month names per locale.
+/// `"19:30"` — the time at the top of a kitchen ticket.
+pub fn format_clock(instant_ms: i64, offset_minutes: i64) -> String {
+    let p = to_zoned_parts(instant_ms, offset_minutes);
+    format!("{:02}:{:02}", p.hour, p.minute)
+}
+
+/// `"2026-09-18 19:30"` — the stamp on a receipt.
 ///
-/// Hardcoded rather than left to a locale service: the Worker and the browser
-/// must produce identical strings — a push notification and the screen it links
-/// to should not disagree.
-const WEEKDAYS_EN: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const WEEKDAYS_MY: [&str; 7] = [
-    "တနင်္ဂနွေ", "တနင်္လာ", "အင်္ဂါ", "ဗုဒ္ဓဟူး", "ကြာသပတေး", "သောကြာ", "စနေ",
-];
-const MONTHS_EN: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-const MONTHS_MY: [&str; 12] = [
-    "ဇန်နဝါရီ", "ဖေဖော်ဝါရီ", "မတ်", "ဧပြီ", "မေ", "ဇွန်",
-    "ဇူလိုင်", "ဩဂုတ်", "စက်တင်ဘာ", "အောက်တိုဘာ", "နိုဝင်ဘာ", "ဒီဇင်ဘာ",
-];
-
-fn weekday_name(locale: &str, weekday: i64) -> &'static str {
-    let table = if locale == "my" { &WEEKDAYS_MY } else { &WEEKDAYS_EN };
-    table.get(weekday as usize).copied().unwrap_or("")
-}
-
-fn month_name(locale: &str, month: i64) -> &'static str {
-    let table = if locale == "my" { &MONTHS_MY } else { &MONTHS_EN };
-    table.get((month - 1) as usize).copied().unwrap_or("")
-}
-
-/// e.g. "Fri 08 Aug, 19:30" / "သောကြာ 08 ဩဂုတ်၊ 7:30 PM".
-pub fn format_kickoff(instant_ms: i64, locale: &str, hour12: bool) -> String {
-    let p = to_zoned_parts(instant_ms);
-    let day =
-        format!("{} {:02} {}", weekday_name(locale, p.weekday), p.day, month_name(locale, p.month));
-    let at = clock_time(p.hour, p.minute, hour12);
-    // Burmese uses its own comma (U+104A); an ASCII one reads as a typo.
-    if locale == "my" {
-        format!("{day}၊ {at}")
-    } else {
-        format!("{day}, {at}")
-    }
-}
-
-/// e.g. "19:30" or "7:30 PM" in ICT.
-pub fn format_time(instant_ms: i64, hour12: bool) -> String {
-    let p = to_zoned_parts(instant_ms);
-    clock_time(p.hour, p.minute, hour12)
-}
-
-/// e.g. "08 Aug 2026" in ICT.
-pub fn format_date(instant_ms: i64, locale: &str) -> String {
-    let p = to_zoned_parts(instant_ms);
-    format!("{:02} {} {}", p.day, month_name(locale, p.month), p.year)
-}
-
-/// Value for an `<input type="datetime-local">`, in ICT wall-clock.
-pub fn to_datetime_local(instant_ms: i64) -> String {
-    let p = to_zoned_parts(instant_ms);
-    format!("{}-{:02}-{:02}T{:02}:{:02}", p.year, p.month, p.day, p.hour, p.minute)
-}
-
-/// Inverse of `to_datetime_local`: reads a local-time string as ICT.
-pub fn from_datetime_local(value: &str) -> Option<i64> {
-    let b = value.as_bytes();
-    if b.len() < 16 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' {
-        return None;
-    }
-    let field = |from: usize, to: usize| -> Option<i64> {
-        let text = value.get(from..to)?;
-        if !text.bytes().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-        text.parse::<i64>().ok()
-    };
-    Some(from_zoned_parts(
-        field(0, 4)?,
-        field(5, 7)?,
-        field(8, 10)?,
-        field(11, 13)?,
-        field(14, 16)?,
-    ))
-}
-
-/// Short human delta, e.g. "in 2d 3h" / "3d 2h အကြာ".
-pub fn relative_to_now(instant_ms: i64, now_ms: i64, locale: &str) -> String {
-    let diff = instant_ms - now_ms;
-    let future = diff >= 0;
-    let span = diff.abs();
-
-    let days = span / MS_PER_DAY;
-    let hours = (span % MS_PER_DAY) / MS_PER_HOUR;
-    let minutes = (span % MS_PER_HOUR) / MS_PER_MINUTE;
-
-    let (d, h, m) = if locale == "my" {
-        (" ရက်", " နာရီ", " မိနစ်")
-    } else {
-        ("d", "h", "m")
-    };
-
-    let value = if days > 0 {
-        let tail = if hours > 0 { format!(" {hours}{h}") } else { String::new() };
-        format!("{days}{d}{tail}")
-    } else if hours > 0 {
-        let tail = if minutes > 0 { format!(" {minutes}{m}") } else { String::new() };
-        format!("{hours}{h}{tail}")
-    } else {
-        format!("{}{m}", minutes.max(1))
-    };
-
-    // Burmese puts the relation after the amount in both directions, so the
-    // English "in X" prefix has no equivalent to mirror.
-    match (locale == "my", future) {
-        (true, true) => format!("{value} အကြာ"),
-        (true, false) => format!("{value} က"),
-        (false, true) => format!("in {value}"),
-        (false, false) => format!("{value} ago"),
-    }
+/// Numeric and locale-free on purpose. A receipt is a record somebody may have
+/// to match against a bank line or a day's takings weeks later, and the two
+/// things a date on a record has to be are unambiguous and sortable. Month
+/// names would be neither: they would need a table in English and Burmese, kept
+/// in step here and in `shared/`, so that the printer agent and the cashier's
+/// screen agree on what to call September — a lot of machinery for a line that
+/// reads better as digits anyway. It is also why this module, unlike futsal's,
+/// has no `Locale` parameter and no month table to get out of step.
+///
+/// 24-hour, because a bill is not a conversation and `19:30` cannot be read as
+/// half past seven in the morning.
+pub fn format_date_time(instant_ms: i64, offset_minutes: i64) -> String {
+    let p = to_zoned_parts(instant_ms, offset_minutes);
+    format!("{}-{:02}-{:02} {:02}:{:02}", p.year, p.month, p.day, p.hour, p.minute)
 }
 
 // ---- civil arithmetic ------------------------------------------------------
@@ -288,67 +188,94 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
 
+    /// Myanmar is UTC+06:30. 390 minutes, and the half hour is why it is
+    /// minutes.
+    const MM: i64 = 390;
+    /// Vietnam, UTC+07:00 — used once, to prove the offset is really a
+    /// parameter.
+    const VN: i64 = 420;
+
+    /// The instants the TypeScript writes as ISO strings. Rust has no `Date` to
+    /// parse them with and is not growing a dependency to get one, so they are
+    /// epoch milliseconds with the string beside them — which is also the last
+    /// place the two suites could silently stop testing the same moment.
+    const MID_SERVICE: i64 = 1_789_736_400_000; // 2026-09-18T13:00:00Z
+    const A_MINUTE_TO_MIDNIGHT: i64 = 1_789_752_540_000; // 2026-09-18T17:29:00Z
+    const LOCAL_MIDNIGHT: i64 = 1_789_752_600_000; // 2026-09-18T17:30:00Z
+    const FIVE_PAST_MIDNIGHT: i64 = 1_789_752_900_000; // 2026-09-18T17:35:00Z
+    const MONTH_END: i64 = 1_790_789_700_000; // 2026-09-30T17:35:00Z
+    const YEAR_END: i64 = 1_798_738_500_000; // 2026-12-31T17:35:00Z
+    const WEST_OF_UTC: i64 = 1_789_696_800_000; // 2026-09-18T02:00:00Z
+    const YESTERDAYS_MIDNIGHT: i64 = 1_789_666_200_000; // 2026-09-17T17:30:00Z
+
+    /// 13:00 UTC + 6h30 = 19:30 in Yangon, which is the middle of dinner
+    /// service.
     #[test]
-    fn a_known_kickoff() {
-        // 2025-08-08T12:30:00Z is Friday 19:30 in Ho Chi Minh City.
-        let p = to_zoned_parts(1_754_656_200_000);
+    fn the_wall_clock_at_plus_six_thirty() {
         assert_eq!(
-            p,
-            ZonedParts { year: 2025, month: 8, day: 8, hour: 19, minute: 30, weekday: 5 }
+            to_zoned_parts(MID_SERVICE, MM),
+            ZonedParts { year: 2026, month: 9, day: 18, hour: 19, minute: 30 }
         );
-        assert_eq!(zoned_date_key(1_754_656_200_000), "2025-08-08");
+        assert_eq!(format_clock(MID_SERVICE, MM), "19:30");
+        assert_eq!(format_date_time(MID_SERVICE, MM), "2026-09-18 19:30");
+    }
+
+    /// The same instant at +07:00 is half an hour later on the clock. If the
+    /// offset were ever stored as hours, this pair would be the same string.
+    #[test]
+    fn the_offset_really_is_minutes() {
+        assert_eq!(format_clock(MID_SERVICE, VN), "20:00");
     }
 
     #[test]
-    fn the_round_trip_lands_where_it_started() {
-        let mut ms = -2_000_000_000_000i64;
-        while ms < 2_000_000_000_000 {
-            let p = to_zoned_parts(ms);
-            let back = from_zoned_parts(p.year, p.month, p.day, p.hour, p.minute);
-            assert_eq!(back, ms - ms.rem_euclid(MS_PER_MINUTE), "at {ms}");
-            ms += 37 * MS_PER_HOUR;
-        }
+    fn parts_round_trip_back_to_the_instant() {
+        assert_eq!(from_zoned_parts(to_zoned_parts(MID_SERVICE, MM), MM), MID_SERVICE);
+    }
+
+    /// The trap, and the analogue of futsal's late-UTC-Thursday-is-ICT-Friday
+    /// case: the local day turns at 17:30 UTC, in the middle of the evening's
+    /// UTC date.
+    #[test]
+    fn which_days_takings() {
+        assert_eq!(zoned_date_key(MID_SERVICE, MM), "2026-09-18");
+        assert_eq!(zoned_date_key(A_MINUTE_TO_MIDNIGHT, MM), "2026-09-18");
+        assert_eq!(zoned_date_key(LOCAL_MIDNIGHT, MM), "2026-09-19");
+        assert_eq!(zoned_date_key(FIVE_PAST_MIDNIGHT, MM), "2026-09-19");
+        // What grouping by the UTC date would have said about that same sale —
+        // the whole evening filed under the wrong day, every night.
+        assert_eq!(zoned_date_key(FIVE_PAST_MIDNIGHT, 0), "2026-09-18");
     }
 
     #[test]
-    fn a_kickoff_that_has_passed_rolls_to_next_week() {
-        let kickoff = 1_754_656_200_000;
-        assert_eq!(next_friday_kickoff(kickoff - 1), kickoff);
-        assert_eq!(next_friday_kickoff(kickoff), kickoff + 7 * MS_PER_DAY);
+    fn the_day_opened_at_local_midnight() {
+        assert_eq!(start_of_zoned_day(MID_SERVICE, MM), YESTERDAYS_MIDNIGHT);
+        assert_eq!(start_of_zoned_day(FIVE_PAST_MIDNIGHT, MM), LOCAL_MIDNIGHT);
     }
 
+    /// Month and year ends are the same arithmetic, and are where an off-by-one
+    /// in a hand-rolled calendar shows up.
     #[test]
-    fn the_clock_reads_both_ways() {
-        assert_eq!(clock_time(19, 30, false), "19:30");
-        assert_eq!(clock_time(19, 30, true), "7:30 PM");
-        assert_eq!(clock_time(0, 5, true), "12:05 AM");
-        assert_eq!(clock_time(12, 0, true), "12:00 PM");
+    fn the_calendar_carries() {
+        assert_eq!(zoned_date_key(MONTH_END, MM), "2026-10-01");
+        assert_eq!(zoned_date_key(YEAR_END, MM), "2027-01-01");
     }
 
+    /// A negative offset has to work as well, since the var is signed and this
+    /// side does the arithmetic in `i64` rather than in a `Date`.
     #[test]
-    fn registration_runs_through_the_game_and_stops_there() {
-        let kickoff = 1_754_656_200_000; // Fri 19:30 ICT.
-
-        assert!(registration_open(kickoff, "scheduled", kickoff - MS_PER_DAY));
-        // The case this rule exists for: 19:30 on the dot, and ten minutes in.
-        assert!(registration_open(kickoff, "scheduled", kickoff));
-        assert!(registration_open(kickoff, "scheduled", kickoff + 10 * MS_PER_MINUTE));
-        assert!(registration_open(kickoff, "scheduled", kickoff + SESSION_RUNS_FOR_MS - 1));
-
-        // Everybody has gone home; from here the fixture is a record.
-        assert!(!registration_open(kickoff, "scheduled", kickoff + SESSION_RUNS_FOR_MS));
-        assert!(!registration_open(kickoff, "scheduled", kickoff + 7 * MS_PER_DAY));
-
-        // Status closes it from the other side, whatever the clock says.
-        assert!(!registration_open(kickoff, "cancelled", kickoff - MS_PER_DAY));
-        assert!(!registration_open(kickoff, "completed", kickoff + MS_PER_MINUTE));
+    fn west_of_utc() {
+        assert_eq!(zoned_date_key(WEST_OF_UTC, -300), "2026-09-17");
     }
 
+    /// No twin in `logic.test.ts`: `Date.UTC` normalises an out-of-range day
+    /// for free and the TypeScript has nothing to prove, whereas here it is a
+    /// property of the four lines in `from_zoned_parts` and worth pinning.
     #[test]
-    fn datetime_local_round_trips() {
-        let ms = 1_754_656_200_000;
-        assert_eq!(to_datetime_local(ms), "2025-08-08T19:30");
-        assert_eq!(from_datetime_local("2025-08-08T19:30"), Some(ms));
-        assert_eq!(from_datetime_local("nonsense"), None);
+    fn a_day_past_the_end_of_the_month_rolls_forward() {
+        let overflowing = ZonedParts { year: 2026, month: 9, day: 31, hour: 0, minute: 0 };
+        assert_eq!(
+            to_zoned_parts(from_zoned_parts(overflowing, MM), MM),
+            ZonedParts { year: 2026, month: 10, day: 1, hour: 0, minute: 0 }
+        );
     }
 }

@@ -7,7 +7,11 @@
 use worker::{Headers, Method, Request, Response, Result as WorkerResult};
 
 const ALLOW_METHODS: &str = "GET,POST,PUT,PATCH,DELETE,QUERY,OPTIONS";
-const ALLOW_HEADERS: &str = "Content-Type,Authorization,X-Invite-Code";
+// The reference allowed `X-Invite-Code` here for its shared group code; this app
+// has no invite code, and a header named for a feature that does not exist is a
+// lie told to whoever is reading this file to work out why a request was
+// blocked.
+const ALLOW_HEADERS: &str = "Content-Type,Authorization";
 const MAX_AGE: &str = "86400";
 
 pub struct Cors {

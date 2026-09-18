@@ -1,34 +1,46 @@
 //! Getting in.
 //!
-//! There is exactly one way: redeem a claim link the organizer sent you. There
-//! is no name picker and no shared password.
+//! There is exactly one way: open the claim link an admin minted for this
+//! tablet. There is no sign-up, no password, and no list of devices to pick
+//! yourself out of.
 //!
-//! The previous design — a group-wide invite code plus "pick who you are" — had
-//! two problems that only look small until you think about money. Anyone holding
-//! the code could pick *any* name, including an organizer's, which made
-//! privilege escalation a two-tap operation; and the code itself sits in a group
-//! chat forever, so it never really expires. A per-person, single-use link fixes
-//! both: it names its holder, it is spent on first use, and it can be reissued
-//! without disturbing anybody else.
+//! Adapted from the reference Worker's `routes/auth.rs`, which ported it from
+//! `src/routes/auth.ts`. The reference had already thrown away a group-wide
+//! invite code plus "pick who you are", and the reasons it gives transfer
+//! intact and get stronger: anybody holding a shared code could claim to be
+//! anybody, and a code that lives in a chat thread never really expires. Here
+//! the holder is a tablet rather than a person, which removes the escalation
+//! entirely — a claim link names one device, is spent the first time it is
+//! opened, and can be reissued for that device without disturbing any other.
 //!
-//! Ported from `src/routes/auth.ts`, which Hono mounted at `/auth` with no auth
-//! middleware of its own — `/auth/me` declares `requireMember()` on the route
-//! and is the only one of the three that has any.
+//! What a claim produces is a token with the device claim and **no staff
+//! claim**: a tablet that has just been set up has nobody standing at it, which
+//! is the PIN screen. `POST /staff/switch` is what adds the second half, and
+//! `routes/staff.rs` is where that lives.
+//!
+//! Nothing here is behind the device gate except `/auth/me`, which asks for it
+//! itself. `/auth/claim` cannot be — it is how a device gets a credential in the
+//! first place — and `/auth/logout` throws one away, which needs no proof that
+//! it was valid.
 
 use serde::Serialize;
 use serde_json::Value;
 use wasm_bindgen::JsValue;
 use worker::{Env, Method, Request, Response};
 
-use crate::db::{self, MemberRow};
+use pos_core::config::AppConfig;
+
+use crate::db;
 use crate::http::{self, ApiResult};
 use crate::identity;
 use crate::middleware::{self, Identity};
 
 /// `None` when nothing here matches, so the dispatcher can go on to the next
-/// router. A path this file owns but with the wrong method is also `None`: Hono
-/// matched on method too, so `GET /auth/claim` fell through to the `ALL /*`
-/// gates that `protectedRoutes` installed and came back 401, not 404.
+/// router. A path this file owns but with the wrong method is also `None`, and
+/// that is deliberate rather than an oversight: `GET /auth/claim` falls through
+/// to `require_device` in `lib.rs` and comes back **401, not 404**, because a
+/// caller with no credential should not be able to map this API by watching
+/// which paths answer differently.
 pub async fn route(req: &mut Request, env: &Env) -> Option<ApiResult<Response>> {
     match (req.method(), req.path().as_str()) {
         (Method::Post, "/auth/claim") => Some(claim(req, env).await),
@@ -40,31 +52,29 @@ pub async fn route(req: &mut Request, env: &Env) -> Option<ApiResult<Response>> 
 
 /// Redeem a link. The nonce is looked up directly — the row is the proof — and
 /// cleared in the same statement, so a forwarded link is worthless once the
-/// first person has opened it.
+/// first tablet has opened it.
 async fn claim(req: &mut Request, env: &Env) -> ApiResult<Response> {
     let nonce = parse_body(req).await?;
     let timestamp = http::now_iso();
 
     let db_handle = crate::env::db(env)?;
-    let row: Option<MemberRow> = db_handle
-        .prepare(
-            "SELECT * FROM members
-        WHERE claim_nonce = ?1 AND active = 1 AND claim_expires_at > ?2",
-        )
-        .bind(&[JsValue::from_str(&nonce), JsValue::from_str(&timestamp)])?
-        .first(None)
-        .await?;
+    let row = db::get_device_by_claim_nonce(&db_handle, &nonce, &timestamp).await?;
 
     // One message for "wrong", "expired" and "already used": distinguishing
-    // them would tell a stranger which of those a value happens to be.
+    // them would tell a stranger which of those a value happens to be, and
+    // there is nothing any of the three answers would let an honest person do
+    // that "ask for a new one" does not.
     let Some(row) = row else {
         return Err(spent_link());
     };
 
-    // Spend it. Guarded on the nonce so two simultaneous opens cannot both win.
+    // Spend it. Guarded on the nonce so two simultaneous opens cannot both win:
+    // the check above and this update are not one operation, and a link pasted
+    // into a group chat gets opened twice within a second more often than it
+    // sounds like it would.
     let spent = db_handle
         .prepare(
-            "UPDATE members
+            "UPDATE devices
           SET claim_nonce = NULL,
               claim_expires_at = NULL,
               claimed_at = COALESCE(claimed_at, ?2)
@@ -85,32 +95,50 @@ async fn claim(req: &mut Request, env: &Env) -> ApiResult<Response> {
         return Err(spent_link());
     }
 
-    // The row as it was read, before the update: `hasPendingLink` is therefore
-    // computed from the nonce this request just spent and is `true`, and
-    // `claimedAt` is the old value — `null` for a first redemption.
-    let member = db::to_member(&row);
+    // `COALESCE` above keeps the first `claimed_at` rather than overwriting it,
+    // so re-issuing a link for a tablet that is already set up — the thing an
+    // admin does when a device has been wiped — leaves the date it entered
+    // service alone. A second date for the same tablet would be a worse answer
+    // to "when did we start using this one" than the first one is.
+
+    // The device claim and nothing else. Nobody is signed in on a tablet that
+    // has this second been claimed, which is exactly what the three `None`s
+    // mean to every route downstream: this device is ours, show the PIN screen.
     let identity = Identity {
-        member_id: member.id,
-        name: member.name,
-        is_organizer: member.is_organizer,
-        language: member.language,
-        hour12: member.hour12,
-        approved: member.approved_at.is_some(),
+        device_id: row.id,
+        device_name: row.name,
+        staff_id: None,
+        staff_name: None,
+        role: None,
     };
 
+    // The row as it was read, before the update, which is where
+    // `row.token_version` comes from. Claiming does not bump it — a claim is a
+    // tablet arriving, not a tablet being cut off — so the version in the token
+    // is the one `require_device` will compare against on the next request.
     let credential = identity::issue(&identity, row.token_version, env).await?;
-    let response = Response::from_json(&Claimed { token: &credential.token, identity: &identity })?;
-    if let Some(set_cookie) = &credential.set_cookie {
-        response.headers().set("Set-Cookie", set_cookie)?;
-    }
-    Ok(response)
+    credential_response(&credential, &identity)
 }
 
+/// The session bootstrap: who this tablet is, and everything it has to know
+/// before it can draw a price or a clock.
+///
+/// The `config` half is read from the `wrangler.jsonc` vars on every call rather
+/// than baked into the frontend build, and `shared/src/config.ts` makes the long
+/// argument for that. The short one: two copies drift, and the day they disagree
+/// the screen is quoting a price the bill does not charge.
 async fn me(req: &Request, env: &Env) -> ApiResult<Response> {
-    let identity = middleware::require_member(req, env).await?;
-    Ok(Response::from_json(&Me { identity: &identity })?)
+    let identity = middleware::require_device(req, env).await?;
+    Ok(Response::from_json(&Me { identity: &identity, config: crate::env::app_config(env) })?)
 }
 
+/// Throw the credential away. There is nothing to invalidate server-side — a
+/// token is stateless for its ninety days — so this clears the cookie and the
+/// client forgets the bearer token.
+///
+/// It is not how a tablet is taken out of service. That is `token_version`,
+/// bumped from the backoffice, because a device left in a taxi is not going to
+/// call this route.
 fn logout() -> ApiResult<Response> {
     let set_cookie = identity::revoke();
     let response = Response::from_json(&serde_json::json!({ "ok": true }))?;
@@ -118,16 +146,52 @@ fn logout() -> ApiResult<Response> {
     Ok(response)
 }
 
-/// Two top-level keys, `token` before `identity`.
+/* ------------------------------------------------------------- the answers */
+
+/// Two top-level keys, `token` before `identity` — `authResultSchema` in
+/// `shared/src/models.ts`.
+///
+/// Declared once and answered by three routes in two files — `/auth/claim`
+/// here, `/staff/switch` and `/staff/signout` next door — through the one
+/// helper below. All three do the same thing, which is mint a token and say who
+/// it now belongs to, and a second declaration of the same two keys is a second
+/// thing to keep in step with the schema.
+///
+/// The token is in the body as well as in the `Set-Cookie` because the API and
+/// the app do not have to share an origin: Pages and Workers are different
+/// origins in production, where Safari blocks the cookie outright. The bearer
+/// token is the one that always works; the cookie is the same-origin bonus that
+/// keeps the credential out of reach of XSS.
 #[derive(Serialize)]
-struct Claimed<'a> {
+struct AuthResult<'a> {
     token: &'a str,
     identity: &'a Identity,
 }
 
+/// `meSchema`: the identity, then the config.
 #[derive(Serialize)]
 struct Me<'a> {
     identity: &'a Identity,
+    config: AppConfig,
+}
+
+/// The response all three token-minting routes send.
+///
+/// Every one of them re-mints rather than patches, because the staff claim is
+/// inside the token: signing somebody in, signing them out and claiming a fresh
+/// tablet are the same operation with different claims. So the `Set-Cookie` has
+/// to travel with all three — a tablet that switched staff and kept its old
+/// cookie would go on presenting the previous person's token on a same-origin
+/// deployment, and only the bearer copy would be right.
+pub fn credential_response(
+    credential: &identity::IssuedCredential,
+    identity: &Identity,
+) -> ApiResult<Response> {
+    let response = Response::from_json(&AuthResult { token: &credential.token, identity })?;
+    if let Some(set_cookie) = &credential.set_cookie {
+        response.headers().set("Set-Cookie", set_cookie)?;
+    }
+    Ok(response)
 }
 
 fn spent_link() -> http::ApiError {
@@ -136,11 +200,18 @@ fn spent_link() -> http::ApiError {
 
 /* --------------------------------------------------------- body validation */
 
-/// `parseBody(c.req.raw, claimSchema)`.
+/// `parseBody(c.req.raw, claimSchema)`, written out.
 ///
-/// Two failures are visible from outside and they are different messages: a
-/// body that is not JSON at all, and a body that is JSON of the wrong shape.
-/// The second is zod's own text, and only the *first* issue is ever reported.
+/// Hand-written rather than derived, and that is the house style rather than
+/// laziness in reverse: the client parses every response with zod, so the server
+/// has to reject exactly what zod would reject and say it in the same words, or
+/// the two halves of the app disagree about what a valid request is. The tests
+/// at the bottom are the proof, and their expected strings were taken from the
+/// real schema running under node.
+///
+/// Two failures are visible from outside and they are different messages: a body
+/// that is not JSON at all, and a body that is JSON of the wrong shape. The
+/// second is zod's own text, and only the *first* issue is ever reported.
 async fn parse_body(req: &mut Request) -> ApiResult<String> {
     // `await request.json()` is a read plus a parse, and either throw lands in
     // the same `catch`.
@@ -158,6 +229,11 @@ async fn parse_body(req: &mut Request) -> ApiResult<String> {
 /// `validate` around it, which prefixes the message with the dotted path of the
 /// issue when there is one. The object's own issues have an empty path, so
 /// `path.join('.')` is falsy for those and the message stands alone.
+///
+/// The bounds are not arbitrary. `identity::new_claim_nonce` is 32 random bytes
+/// as base64url, which is 43 characters; 20 is comfortably below that and 100
+/// comfortably above, so the range rejects the obviously-not-a-nonce without
+/// pinning the length of something that could reasonably be regenerated wider.
 fn validate(raw: &Value) -> ApiResult<String> {
     let Some(object) = raw.as_object() else {
         return Err(http::bad_request(format!(
@@ -262,6 +338,18 @@ mod tests {
         assert_eq!(ok(&format!(r#"{{"nonce":"{}","x":1}}"#, "y".repeat(20))), "y".repeat(20));
         // Ten emoji are twenty UTF-16 code units.
         assert_eq!(ok(r#"{"nonce":"😀😀😀😀😀😀😀😀😀😀"}"#), "😀😀😀😀😀😀😀😀😀😀");
+    }
+
+    /// The nonce this Worker actually mints clears the minimum with room to
+    /// spare — the one case the bounds exist to let through.
+    #[test]
+    fn accepts_a_nonce_of_the_length_this_worker_mints() {
+        let minted = "y".repeat(43);
+        assert_eq!(
+            validate(&serde_json::from_str(&format!(r#"{{"nonce":"{minted}"}}"#)).unwrap())
+                .unwrap(),
+            minted
+        );
     }
 
     /// The one message all three "no" answers share.

@@ -1,144 +1,141 @@
+import type { Currency } from './config.js';
+
 /**
  * Money helpers.
  *
- * All amounts are **integer Vietnamese dong**. VND has no circulating subunit,
- * so there are no fractional amounts anywhere in this app — never introduce a
- * float here. Splitting is done with a largest-remainder allocation so the
- * shares always sum back to the total exactly, with no cent (dong) drift.
+ * Every amount in this app is an **integer in the currency's minor units** —
+ * kyat for MMK, which has no circulating subunit, cents for a currency that
+ * has one. There is no float anywhere in the path from a product's price to
+ * the number on the bill, and introducing one is not a style violation, it is
+ * a bug with a cash drawer attached.
+ *
+ * The currency is a parameter rather than a module constant. It comes from the
+ * Worker's `vars` and reaches the client through `GET /auth/me` — see
+ * `config.ts` for why there is only one copy of it — and passing it in is also
+ * what lets the tests here and the twin tests in `api/core/src/money.rs`
+ * exercise the same function the app calls, with the currency written out in
+ * front of the reader.
+ *
+ * Splitting went with split payments: futsal's `splitEqually` and
+ * `splitWithOverrides` were a largest-remainder allocation for dividing a
+ * pitch hire between players, and this app settles a check with one payment.
+ * They are deleted rather than left in place against a day that may not come —
+ * dead code in a money module is worse than absent code, because the next
+ * person to read it has to work out whether the till uses it.
  */
-
-/** Cash in Vietnam moves in 1,000d notes; default every split to that grain. */
-export const DEFAULT_GRANULARITY = 1_000;
 
 /**
- * Split `total` across `count` people so that:
- *   - every share is a multiple of `granularity` where possible,
- *   - the shares differ by at most one granularity step,
- *   - `sum(shares) === total`, exactly.
+ * Group mark `.`, decimal mark `,`.
  *
- * The extra dong land on the earliest registrants, which is deterministic and
- * therefore reproducible when the organizer re-settles a session.
+ * One pair, chosen once, used everywhere. The pair matters more than which
+ * half of it you prefer: a group mark and a decimal mark that are the same
+ * character make `1.500` unreadable, and a POS that renders an amount the
+ * cashier cannot read aloud to a customer has failed at its only job.
+ *
+ * This pair is the one the restaurant's own currency wants — MMK has no
+ * subunit, so every separator on a Myanmar price tag is a group mark, and
+ * `12.500 Ks` is how the price is written on the menu. The decimal mark below
+ * only ever appears for a currency with `minorDigits > 0`, which this
+ * deployment does not have; it is defined so that the function is total rather
+ * than because anybody here will see it.
  */
-export function splitEqually(
-  total: number,
-  count: number,
-  granularity: number = DEFAULT_GRANULARITY,
-): number[] {
-  if (!Number.isFinite(total) || !Number.isFinite(count)) {
-    throw new Error('splitEqually: total and count must be finite');
-  }
-  if (count <= 0) return [];
-  if (total <= 0) return new Array(count).fill(0);
+const GROUP_MARK = '.';
+const DECIMAL_MARK = ',';
 
-  const grain = Math.max(1, Math.floor(granularity));
-  const cents = Math.round(total);
-
-  const base = Math.floor(cents / count / grain) * grain;
-  const shares: number[] = new Array(count).fill(base);
-
-  let remainder = cents - base * count;
-  for (let i = 0; i < count && remainder > 0; i++) {
-    const step = Math.min(grain, remainder);
-    shares[i] = (shares[i] ?? 0) + step;
-    remainder -= step;
-  }
-  // Guaranteed unreachable (remainder < count * grain), but keeps the
-  // invariant sum(shares) === total true even if grain/count change.
-  if (remainder > 0) shares[0] = (shares[0] ?? 0) + remainder;
-
-  return shares;
-}
-
-export interface SplitInput {
-  /** Stable key per payer — a member id. */
-  id: string;
-  /** Absolute amount fixed by the organizer for this person, if any. */
-  override?: number | null;
-  /**
-   * How many people this payer is paying for: themselves plus any guests they
-   * brought. Defaults to 1.
-   *
-   * The bill is divided by *heads on the pitch*, not by app accounts, because
-   * the pitch was hired for bodies. Somebody who brings two friends is three
-   * heads and owes three shares.
-   */
-  heads?: number;
-}
-
-/**
- * Split a session's total charge across payers, honouring per-person overrides
- * and party sizes.
- *
- * Overridden people pay exactly what the organizer typed — for their whole
- * party, which is the natural reading of "Bao pays 200.000" — and whatever is
- * left is divided among the remaining *heads*. If the overrides already exceed
- * the total, the remaining players owe nothing rather than a negative amount.
- *
- * ## Why this groups slices instead of multiplying
- *
- * The tempting version computes one share and multiplies it by the head count.
- * That rounds twice — once to find the share, once per party — and the parts
- * stop summing to the total: money is either invented or quietly lost, and in
- * a group that settles up in cash somebody eventually notices they are a
- * thousand dong short every week.
- *
- * Instead the total is split into `heads` slices *once*, by the same
- * largest-remainder allocation as always, and each payer is handed a
- * consecutive run of them. Grouping cannot change a sum, so
- * `sum(result) === total` still holds exactly, by construction rather than by
- * a correction step.
- */
-export function splitWithOverrides(
-  total: number,
-  payers: readonly SplitInput[],
-  granularity: number = DEFAULT_GRANULARITY,
-): Map<string, number> {
-  const result = new Map<string, number>();
-
-  const isFixed = (p: SplitInput) => typeof p.override === 'number' && p.override !== null;
-  const fixed = payers.filter(isFixed);
-  const flexible = payers.filter((p) => !isFixed(p));
-
-  let fixedSum = 0;
-  for (const p of fixed) {
-    const amount = Math.max(0, Math.round(p.override as number));
-    result.set(p.id, amount);
-    fixedSum += amount;
-  }
-
-  const remaining = Math.max(0, Math.round(total) - fixedSum);
-  const headsOf = (p: SplitInput) => Math.max(1, Math.floor(p.heads ?? 1));
-  const totalHeads = flexible.reduce((sum, p) => sum + headsOf(p), 0);
-
-  const slices = splitEqually(remaining, totalHeads, granularity);
-
-  let cursor = 0;
-  for (const p of flexible) {
-    let owed = 0;
-    for (let i = 0; i < headsOf(p); i++) owed += slices[cursor++] ?? 0;
-    result.set(p.id, owed);
-  }
-
-  return result;
-}
-
-/** `120000` → `"120.000d"`. Vietnamese convention uses `.` as the group mark. */
-export function formatVnd(amount: number): string {
-  const rounded = Math.round(amount);
+/** `12500` in MMK → `"12.500 Ks"`; `1234567` in a 2-digit currency → `"12.345,67 $"`. */
+export function formatMoney(minor: number, currency: Currency): string {
+  const rounded = Math.round(minor);
   const sign = rounded < 0 ? '-' : '';
-  const digits = Math.abs(rounded).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return `${sign}${digits}d`;
+  const abs = Math.abs(rounded);
+
+  // `minorDigits === 0` is not an optimisation of the general branch, it is a
+  // different rendering: there is no fractional part to write, and dividing by
+  // a scale of 1 to prove it would only invite somebody to "simplify" the two
+  // into one expression that emits a trailing separator.
+  if (currency.minorDigits === 0) {
+    return `${sign}${group(abs)} ${currency.symbol}`;
+  }
+
+  const scale = 10 ** currency.minorDigits;
+  const whole = Math.floor(abs / scale);
+  const fraction = (abs % scale).toString().padStart(currency.minorDigits, '0');
+  return `${sign}${group(whole)}${DECIMAL_MARK}${fraction} ${currency.symbol}`;
 }
 
-/** Tolerant of what people actually type: "120k", "120.000", "120 000". */
-export function parseVnd(input: string): number | null {
+/**
+ * Tolerant of what people actually type: `"12500"`, `"12,500"`, `"12 500"`,
+ * `"12.500"`, `"12.5k"`. Returns `null` for anything it cannot read, which the
+ * caller shows as a validation error rather than as a zero.
+ *
+ * Two rules decide the ambiguous cases, and they are rules rather than
+ * guesses:
+ *
+ *   1. A separator is a **group mark** unless it is the last one *and* exactly
+ *      `minorDigits` digits follow it. So `12,500` is twelve and a half
+ *      thousand in every currency, and `12.50` is twelve-fifty only where
+ *      there is such a thing as fifty of something.
+ *   2. Bare digits are **whole units**, never minor ones. `1250` typed into a
+ *      2-digit currency is one thousand two hundred and fifty, not twelve
+ *      fifty. Tills that do the opposite are the reason people mistrust tills.
+ *
+ * For MMK both rules collapse to "strip the separators", which is the only
+ * path this restaurant will ever take.
+ */
+export function parseMoney(input: string, currency: Currency): number | null {
   const trimmed = input.trim().toLowerCase();
   if (!trimmed) return null;
 
-  const shorthand = /^(\d+(?:[.,]\d+)?)\s*k$/.exec(trimmed);
-  if (shorthand) return Math.round(Number(shorthand[1]!.replace(',', '.')) * 1_000);
+  const scale = 10 ** currency.minorDigits;
 
-  const digits = trimmed.replace(/[.,\s]/g, '');
-  if (!/^\d+$/.test(digits)) return null;
-  return Number(digits);
+  // `12k` is how a price gets said out loud, and typing it is faster than
+  // counting zeroes. It is always whole units times a thousand.
+  const shorthand = /^(\d+(?:[.,]\d+)?)\s*k$/.exec(trimmed);
+  if (shorthand) return Math.round(Number(shorthand[1]!.replace(',', '.')) * 1_000 * scale);
+
+  // Spaces are never anything but a group mark, so they go first and the rest
+  // of the parse never has to think about them.
+  const compact = trimmed.replace(/\s/g, '');
+  if (!/^\d[\d.,]*$/.test(compact)) return null;
+
+  if (currency.minorDigits === 0) {
+    const digits = compact.replace(/[.,]/g, '');
+    return /^\d+$/.test(digits) ? Number(digits) : null;
+  }
+
+  const decimal = new RegExp(`^(.*)[.,](\\d{${currency.minorDigits}})$`).exec(compact);
+  const wholeDigits = (decimal ? decimal[1]! : compact).replace(/[.,]/g, '');
+  const fraction = (decimal ? decimal[2]! : '').padEnd(currency.minorDigits, '0');
+  if (!/^\d+$/.test(wholeDigits)) return null;
+  return Number(wholeDigits) * scale + Number(fraction);
+}
+
+/**
+ * What a check comes to: every line's price times its quantity, added up.
+ *
+ * This is the primitive the whole app totals with — the cart under the waiter's
+ * product grid, the round that gets sent, the bill the cashier takes money
+ * against — and it is three lines because it has to be exactly one definition.
+ * Two places that each add up a check will eventually disagree by a kyat, and
+ * the one that disagrees is always the one the customer is looking at.
+ *
+ * Integers in, integer out, no rounding step. A float here would not break
+ * loudly: it would agree with the till for weeks and then hand somebody a bill
+ * one unit off, because `1.15 * 7` is `8.049999999999999` and truncating that
+ * back to minor units loses a cent. Multiplying and summing integers cannot do
+ * that. Keeping the values integers is the job of `minorSchema` at the API
+ * boundary, not of a `Math.round` in here — rounding at the point of use would
+ * hide the float that got in instead of refusing it.
+ *
+ * Voided lines are the caller's problem, not this function's: it adds up what
+ * it is handed, and the queries that feed it filter on `voided_at IS NULL`.
+ */
+export function sumMinor(lines: readonly { priceMinor: number; qty: number }[]): number {
+  let total = 0;
+  for (const line of lines) total += line.priceMinor * line.qty;
+  return total;
+}
+
+/** `12500` → `"12.500"`. The thousands separator, inserted right to left. */
+function group(value: number): string {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, GROUP_MARK);
 }

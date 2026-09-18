@@ -1,0 +1,15 @@
+[package]
+name = "pos-core"
+version = "1.0.0"
+edition = "2021"
+publish = false
+description = "Types and pure helpers shared by the Worker — the Rust half of what shared/ is."
+
+[lib]
+# Deliberately free of any Worker or wasm dependency, so `cargo test` runs it on
+# the host and the port can be checked against the TypeScript it came from.
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }

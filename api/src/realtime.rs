@@ -1,11 +1,16 @@
 //! The realtime seam.
 //!
-//! Ported from `src/realtime/{index,upstash,disabled}.ts` — and, because the
-//! original delegated the wire to two npm packages, from the parts of
+//! Taken from the reference Worker's `realtime.rs`, which ported it from
+//! `src/realtime/{index,upstash,disabled}.ts` — and, because that original
+//! delegated the wire to two npm packages, from the parts of
 //! `@upstash/realtime@…/dist/server/{realtime,handler}.js` and
-//! `@upstash/redis@1.38.1` that those two files actually reach. Routes only ever
-//! call `emit`; swapping Upstash for Durable Object WebSockets later means one
-//! more variant here and nothing in a route.
+//! `@upstash/redis@1.38.1` that those two files actually reach. It arrives here
+//! unchanged apart from a cache invalidation this app has nothing to invalidate
+//! for; the wire format, the keepalive and the reconnect timer are the
+//! reference's, because the Upstash budget in `CLAUDE.md` is counted against
+//! this file's constants. Routes only ever call `emit`; swapping Upstash for
+//! Durable Object WebSockets later means one more variant here and nothing in a
+//! route.
 //!
 //! Two behaviours are load-bearing and easy to lose:
 //!
@@ -112,29 +117,20 @@ impl PubSub {
             }
             PubSub::Upstash(client) => {
                 /*
-                 * Anything derived from the whole history is now wrong.
+                 * The reference dropped a cached leaderboard here, because
+                 * anything derived from its whole history had just gone stale
+                 * and `emit` is the one call every mutation already makes to
+                 * say it changed something.
                  *
-                 * Hung off `emit` rather than sprinkled through the routes
-                 * because this is already the call every mutation makes to say
-                 * it changed something — and a list of a dozen call sites is a
-                 * list somebody eventually forgets to add to. The names are
-                 * matched positively: a new event has to opt in, so the failure
-                 * mode of forgetting is a stale board for an hour rather than a
-                 * silent extra Redis round trip on every message posted.
-                 *
-                 * It is also self-consistent about being switched off. The
-                 * cache and the stream are the same Redis, so a deployment
-                 * without one has neither, and there is nothing to invalidate.
+                 * This app has nothing equivalent and is not expected to grow
+                 * one. Every figure a screen shows is a check's own total,
+                 * summed from the rows of the check in front of you, and the
+                 * one aggregate in the brief — the backoffice's takings for
+                 * today — is a scan of about sixty payment rows. There is
+                 * nothing here that is expensive enough to cache, so there is
+                 * nothing to invalidate, and the publish below is all `emit`
+                 * does.
                  */
-                if AFFECTS_HISTORY.contains(&event) {
-                    let commands = serde_json::json!([["DEL", crate::cache::LEADERBOARD_KEY]]);
-                    if let Err(error) =
-                        pipeline(&client.base_url, &client.token, &commands).await
-                    {
-                        console_log!("[cache] could not drop the leaderboard: {error}");
-                    }
-                }
-
                 let promises = Array::new();
                 for channel in channels {
                     // Stream ids are handed out synchronously for every target
@@ -180,19 +176,6 @@ impl PubSub {
         }
     }
 }
-
-/// Events after which the leaderboard has to be recomputed.
-///
-/// Everything the board is derived from: who is registered, who turned up, who
-/// won an award, and which sessions are in the window at all. Deliberately not
-/// `teams.changed`, `player.moved`, `message.*` or `payment.*` — none of those
-/// moves a figure on any board, and dropping the key for them would mean
-/// rebuilding it during the busiest minute of a Friday for no reason.
-///
-/// Goals and member changes do not emit events at all, so those two invalidate
-/// by hand at their own call sites.
-const AFFECTS_HISTORY: [&str; 5] =
-    ["player.joined", "player.left", "player.attendance", "mvp.changed", "session.updated"];
 
 // ---------------------------------------------------------------------------
 // Upstash
@@ -917,14 +900,22 @@ fn argument(value: &Value) -> Value {
 /// `POST <base>/pipeline` with the commands as a JSON array of arrays.
 /// The REST endpoint and token, when Redis is configured at all.
 ///
-/// Exposed so the cache can sit on the same connection rather than growing a
-/// second client with its own configuration and its own way of being absent.
+/// The reference exposed this so its leaderboard cache could sit on the same
+/// connection rather than grow a second client with its own configuration and
+/// its own way of being absent. This app has nothing else that talks to Redis,
+/// so the pair below has no caller — but the rule it encodes is the one worth
+/// keeping: whatever reaches for Upstash next reaches for it here, and
+/// inherits "not configured" meaning the same thing it means to the stream.
+#[allow(dead_code)]
 pub fn upstash_rest(env: &Env) -> Option<(String, String)> {
     crate::env::upstash(env)
         .map(|(url, token)| (url.strip_suffix('/').unwrap_or(&url).to_string(), token))
 }
 
-/// Run Redis commands over the REST pipeline. Shared with `cache`.
+/// Run Redis commands over the REST pipeline. The way in for anything outside
+/// this module that ends up needing Redis; see [`upstash_rest`] for why it is
+/// exported with nothing calling it.
+#[allow(dead_code)]
 pub async fn redis_pipeline(
     base_url: &str,
     token: &str,

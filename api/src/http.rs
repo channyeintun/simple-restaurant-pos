@@ -1,26 +1,42 @@
 //! The one error envelope.
 //!
-//! Ported from `src/http.ts`. Every failure this API reports is
+//! Copied from the reference Worker's `http.rs`, which ported it from
+//! `src/http.ts` — the envelope, the constructors and the `worker::Error`
+//! conversion are unchanged, and only the list of codes is this app's own.
+//! Every failure this API reports is
 //! `{"error":{"code":"…","message":"…"}}` — two keys, `code` before `message` —
 //! and nothing else may leave the Worker with an error status.
 
 use serde::Serialize;
 use worker::{Response, Result as WorkerResult};
 
-/// The closed set of codes the original `ApiErrorCode` union allowed.
+/// The closed set of codes this API answers with.
 ///
 /// These are the strings that cross the wire; the web app matches on them, so
-/// they are part of the API and not an implementation detail.
+/// they are part of the API and not an implementation detail. The list is the
+/// reference's minus the four that belonged to booking a football pitch, plus
+/// the two rules this app has that a bare `conflict` or `unauthorized` would
+/// leave the screen with nothing useful to say.
 pub mod code {
     pub const BAD_REQUEST: &str = "bad_request";
-    pub const INVALID_CODE: &str = "invalid_code";
     pub const UNAUTHORIZED: &str = "unauthorized";
     pub const FORBIDDEN: &str = "forbidden";
     pub const NOT_FOUND: &str = "not_found";
     pub const CONFLICT: &str = "conflict";
-    pub const PAYLOAD_TOO_LARGE: &str = "payload_too_large";
-    pub const REGISTRATION_CLOSED: &str = "registration_closed";
-    pub const SESSION_FULL: &str = "session_full";
+    /// The table already has an open check, which is the one conflict in this
+    /// app a waiter can do something about: the screen says so by name and
+    /// offers to open the existing check instead of starting a second one. The
+    /// partial unique index in `0001_init.sql` is what actually settles the
+    /// race between two waiters tapping Send on table 4 in the same second —
+    /// this is how the loser of that race is told.
+    pub const TABLE_BUSY: &str = "table_busy";
+    /// Those four digits match nobody. It takes the place of the reference's
+    /// `invalid_code`, which a bad invite code was answered with, and exists
+    /// for the same reason: the PIN screen clears the keypad and stays where it
+    /// is, whereas a plain `unauthorized` means the device credential is gone
+    /// and the tablet has to go back to the claim screen — a different thing to
+    /// do, needing a different person to do it.
+    pub const BAD_PIN: &str = "bad_pin";
     pub const INTERNAL: &str = "internal";
     /// Not in the original union, but `createDisabledPubSub` emits it verbatim.
     pub const REALTIME_DISABLED: &str = "realtime_disabled";
@@ -81,8 +97,12 @@ pub fn unauthorized(message: impl Into<String>) -> ApiError {
     ApiError::new(401, code::UNAUTHORIZED, message)
 }
 
+/// The blanket 403. `require_role` is its only caller, so the message answers
+/// the question that gate asks: the caller is signed in as somebody, and that
+/// somebody is not allowed to do this. "Organizers only" was the reference's
+/// wording and is the one string in this file that could not be carried over.
 pub fn forbidden_default() -> ApiError {
-    forbidden("Organizers only")
+    forbidden("Your role does not allow that")
 }
 
 pub fn forbidden(message: impl Into<String>) -> ApiError {
@@ -120,6 +140,12 @@ impl From<worker::Error> for ApiError {
 
 /// `newId(prefix)` — prefix, one underscore, then the first 20 hex characters of
 /// a v4 UUID with its hyphens removed.
+///
+/// The prefixes in use are `stf_`, `dev_`, `tbl_`, `cat_`, `prd_`, `chk_`,
+/// `rnd_`, `itm_`, `pay_` and `job_`. Nothing parses one — an id is an opaque
+/// key everywhere in this app — so the prefix is for whoever is reading a log
+/// line or a column of ids in a `wrangler d1` result and wants to know at a
+/// glance what they are looking at.
 pub fn new_id(prefix: &str) -> String {
     let uuid = crate::js::random_uuid();
     let flat: String = uuid.chars().filter(|c| *c != '-').take(20).collect();
