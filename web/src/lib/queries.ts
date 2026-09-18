@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/solid-query';
+import { listDevices, listRoster, salesToday } from '../api/admin.js';
 import { me } from '../api/auth.js';
+import { listCategories, listProducts, listTables } from '../api/catalogue.js';
 import { ApiError } from '../api/client.js';
 import { listStaff } from '../api/staff.js';
 
@@ -62,8 +64,42 @@ export const queryKeys = {
    * start taking orders.
    */
   me: ['me'] as const,
-  /** The names on the PIN screen. Milestone 1's staff editor invalidates it. */
+  /** The names on the PIN screen. The backoffice's staff editor invalidates it. */
   staff: ['staff'] as const,
+
+  /*
+   * The catalogue, keyed by *which* list it is.
+   *
+   * `includeRetired` is in the key because it is two different answers from one
+   * route, not one answer filtered: the retired rows are simply not in the
+   * short list, so a screen holding the short one cannot render the long one by
+   * filtering less. Keeping them apart also means the waiter's cached menu is
+   * untouched when a manager opens the backoffice on the same tablet.
+   */
+  tables: (includeRetired: boolean) => ['tables', includeRetired] as const,
+  categories: (includeRetired: boolean) => ['categories', includeRetired] as const,
+  products: (includeRetired: boolean) => ['products', includeRetired] as const,
+
+  /** The full roster, admin-only. Not {@link queryKeys.staff}, which is the
+   *  PIN screen's three columns and a different audience. */
+  roster: ['staff', 'roster'] as const,
+  devices: ['devices'] as const,
+  salesToday: ['reports', 'sales', 'today'] as const,
+};
+
+/**
+ * Both halves of a catalogue list, for a screen that has just changed one.
+ *
+ * An edit in the backoffice touches the long list it is looking at *and* the
+ * short one the waiter screen on the same tablet is holding, and the two are
+ * separate cache entries by design. Rather than have each editor remember to
+ * invalidate a key it does not otherwise mention, they invalidate the prefix —
+ * `['products']` matches `['products', true]` and `['products', false]` both.
+ */
+export const catalogueRoot = {
+  tables: ['tables'] as const,
+  categories: ['categories'] as const,
+  products: ['products'] as const,
 };
 
 /* ----------------------------------------------------------------- policy */
@@ -129,6 +165,98 @@ export function useStaff() {
     queryKey: queryKeys.staff,
     queryFn: ({ signal }) => listStaff(signal),
     staleTime: 5 * 60_000,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+/* -------------------------------------------------------------- catalogue */
+
+/*
+ * Cached for five minutes, which is a long time for a list somebody is editing
+ * and exactly right for one nobody is.
+ *
+ * The menu changes a handful of times a month and is read on every screen in
+ * the app, so the default — refetch whenever a component mounts — would spend a
+ * request every time a waiter walks back to a table. The editors do not rely on
+ * the timer: each one writes its result in with `setQueryData` and invalidates
+ * the other half of the pair, so an edit is on screen before the response has
+ * finished being parsed.
+ */
+const CATALOGUE_STALE_MS = 5 * 60_000;
+
+export function useTables(includeRetired = false) {
+  return useQuery(() => ({
+    queryKey: queryKeys.tables(includeRetired),
+    queryFn: ({ signal }) => listTables(includeRetired, signal),
+    staleTime: CATALOGUE_STALE_MS,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+export function useCategories(includeRetired = false) {
+  return useQuery(() => ({
+    queryKey: queryKeys.categories(includeRetired),
+    queryFn: ({ signal }) => listCategories(includeRetired, signal),
+    staleTime: CATALOGUE_STALE_MS,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+export function useProducts(includeRetired = false) {
+  return useQuery(() => ({
+    queryKey: queryKeys.products(includeRetired),
+    queryFn: ({ signal }) => listProducts(includeRetired, signal),
+    staleTime: CATALOGUE_STALE_MS,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+/* ------------------------------------------------------------- backoffice */
+
+/**
+ * The roster and the tablet list.
+ *
+ * A minute rather than the catalogue's five. These are the two lists a manager
+ * edits *while looking at them* — hiring somebody, minting a link, watching for
+ * a tablet to report itself set up — and the last of those is the one that
+ * matters: `claimedAt` changes because somebody walked to another room and
+ * opened a link, so it is the one thing on this screen that can change without
+ * this screen having caused it.
+ */
+const BACKOFFICE_STALE_MS = 60_000;
+
+export function useRoster() {
+  return useQuery(() => ({
+    queryKey: queryKeys.roster,
+    queryFn: ({ signal }) => listRoster(signal),
+    staleTime: BACKOFFICE_STALE_MS,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+export function useDevices() {
+  return useQuery(() => ({
+    queryKey: queryKeys.devices,
+    queryFn: ({ signal }) => listDevices(signal),
+    staleTime: BACKOFFICE_STALE_MS,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+/**
+ * The day's takings.
+ *
+ * Thirty seconds, because this is the one figure in the backoffice that moves
+ * on its own: every payment the cashier takes changes it, and a manager who
+ * opens this screen during service is asking what it is *now*. It is still a
+ * cache rather than a poll — nothing refetches while the screen sits untouched,
+ * and re-opening the tab within half a minute costs nothing.
+ */
+export function useSalesToday() {
+  return useQuery(() => ({
+    queryKey: queryKeys.salesToday,
+    queryFn: ({ signal }) => salesToday(signal),
+    staleTime: 30_000,
     retry: retryUnlessUnauthorized,
   }));
 }

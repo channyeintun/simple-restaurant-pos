@@ -93,6 +93,78 @@ export const staffNameSchema = z.object({
 });
 export type StaffName = z.infer<typeof staffNameSchema>;
 
+/**
+ * Hiring somebody, from the backoffice roster.
+ *
+ * No PIN. It is a separate route and a separate schema below, because setting
+ * one is a different act from adding a person: the hash can only be computed
+ * where `AUTH_SECRET` is, a PIN is changed far more often than a name, and a
+ * create body carrying four digits is four digits in whatever log captured the
+ * request that created the row.
+ *
+ * So a new member of staff starts with `pin_hash` NULL and cannot sign in
+ * anywhere until an admin sets one. That is the honest state — the roster knows
+ * they work here, the tablets do not yet know their digits — and the roster
+ * screen says so beside the name rather than leaving it to be discovered at the
+ * keypad.
+ */
+export const createStaffSchema = z.object({
+  name: z.string().trim().min(1, 'Name is required').max(40),
+  role: staffRoleSchema,
+});
+export type CreateStaffInput = z.infer<typeof createStaffSchema>;
+
+/**
+ * Renaming somebody, changing what they may do, or striking them off.
+ *
+ * `active: false` is the only way a person leaves. Their name is snapshotted on
+ * no check — a round carries `sent_by`, an id — so deleting the row would
+ * leave last month's takings pointing at nothing, and `ON DELETE RESTRICT` in
+ * `0001_init.sql` refuses it anyway.
+ */
+export const updateStaffSchema = createStaffSchema.partial().extend({
+  active: z.boolean().optional(),
+});
+export type UpdateStaffInput = z.infer<typeof updateStaffSchema>;
+
+/**
+ * The roster, as the backoffice shows it: everybody, including the people who
+ * have left, plus the one thing about a PIN that may be told.
+ *
+ * Written out rather than `staffSchema.extend({ hasPin })`, for the reason
+ * {@link staffNameSchema} is written out and for one more: `.extend()` appends,
+ * and field order is output order here, so the flag would land after
+ * `createdAt` instead of beside the other things that are true about a person
+ * now. The order below is the order the roster row reads in.
+ *
+ * `hasPin` is a boolean and can never be anything else. It is `pin_hash IS NOT
+ * NULL` computed in SQL, so the hash is not selected, is not on a struct, and
+ * cannot be serialized by somebody adding a field to this screen later. What an
+ * admin needs to know is whether this person can sign in at all; the digits are
+ * not recoverable by anybody, including the admin, and that is the design
+ * rather than a limitation of it.
+ */
+export const staffRosterSchema = z.object({
+  id: idSchema,
+  name: z.string().min(1).max(40),
+  role: staffRoleSchema,
+  active: z.boolean(),
+  hasPin: z.boolean(),
+  createdAt: isoSchema,
+});
+export type StaffRosterEntry = z.infer<typeof staffRosterSchema>;
+
+/**
+ * Setting or replacing somebody's four digits is {@link setPinSchema}, and it
+ * is declared down in the auth section rather than here.
+ *
+ * Not for tidiness: `pinSchema` is declared there, a `const` is not hoisted,
+ * and a schema up here that referenced one down there would throw at module
+ * evaluation rather than fail a type check. The two PIN bodies — the one an
+ * admin sets and the one a waiter taps — are held to the same shape by sharing
+ * that declaration, so they live beside it.
+ */
+
 /* ------------------------------------------------------------------ device */
 
 /**
@@ -128,6 +200,20 @@ export const claimLinkSchema = z.object({
   deviceName: z.string(),
 });
 export type ClaimLink = z.infer<typeof claimLinkSchema>;
+
+/**
+ * Adding a tablet to the restaurant.
+ *
+ * A name and nothing else. The row starts unclaimed with no nonce on it, and
+ * minting the link is a second call — because a device row and an invitation
+ * have different lifetimes: a link expires and is replaced, often more than
+ * once ("send it again, I lost the message"), while the tablet it names stays
+ * the same tablet for as long as it is in the building.
+ */
+export const createDeviceSchema = z.object({
+  name: z.string().trim().min(1, 'Device name is required').max(40),
+});
+export type CreateDeviceInput = z.infer<typeof createDeviceSchema>;
 
 /* ------------------------------------------------------------------- table */
 
@@ -346,6 +432,43 @@ export const printJobSchema = z.object({
 });
 export type PrintJob = z.infer<typeof printJobSchema>;
 
+/* ----------------------------------------------------------------- reports */
+
+/**
+ * The only report this app has: what the restaurant took today.
+ *
+ * "Today" is the restaurant's day, not the Worker's. It runs from local
+ * midnight — `TZ_OFFSET_MINUTES` minutes ahead of UTC — to the same instant
+ * tomorrow, which is why a sale rung up at five past midnight belongs to the
+ * new day rather than to the shift that was still clearing tables. `time.ts`
+ * has the arithmetic and the twin tests; this is the shape it comes back in.
+ *
+ * `dayStart` and `dayEnd` are carried rather than left for the client to work
+ * out. They are the window the Worker actually summed over, so a screen that
+ * shows "since 00:00" is quoting the query rather than guessing at it — and the
+ * day somebody changes the offset, the number and the window it covers move
+ * together instead of one of them being six and a half hours out.
+ *
+ * The three totals are separate because a cashier counting a drawer at close
+ * cares about the cash line specifically, and adding the card takings into it
+ * makes the drawer wrong by exactly the amount that was never in it.
+ */
+export const salesTodaySchema = z.object({
+  dayStart: isoSchema,
+  dayEnd: isoSchema,
+  /** Every payment in the window, whatever the method. */
+  totalMinor: minorSchema,
+  /** How it arrived, so a drawer can be counted against the cash line alone. */
+  byMethod: z.object({
+    cash: minorSchema,
+    card: minorSchema,
+    other: minorSchema,
+  }),
+  /** How many checks were settled, which is roughly how many tables ate. */
+  checkCount: z.number().int().min(0),
+});
+export type SalesToday = z.infer<typeof salesTodaySchema>;
+
 /* -------------------------------------------------------------------- auth */
 
 /**
@@ -380,6 +503,27 @@ export const staffSwitchSchema = z.object({
   pin: pinSchema,
 });
 export type StaffSwitchInput = z.infer<typeof staffSwitchSchema>;
+
+/**
+ * An admin setting or replacing somebody's four digits, from the roster.
+ *
+ * The same {@link pinSchema} as the keypad above, and sharing that declaration
+ * is the point: the digits that are stored and the digits that are typed have
+ * to be the same shape, and the length is load-bearing rather than cosmetic —
+ * `HMAC-SHA256(AUTH_SECRET, staff_id || pin)` concatenates the two with no
+ * separator, which is unambiguous only because a PIN is always exactly four
+ * characters. Widen one side and two different pairs can hash to one message.
+ *
+ * There is no route that reads a PIN back. `pin_hash` is the one column in the
+ * schema that must not leave the Worker, and it is a keyed hash rather than the
+ * digits anyway — so the roster shows "PIN set" or "No PIN" beside a name and
+ * offers to replace it, which is the whole of what an admin can do about one
+ * somebody has forgotten.
+ */
+export const setPinSchema = z.object({
+  pin: pinSchema,
+});
+export type SetPinInput = z.infer<typeof setPinSchema>;
 
 /* ---------------------------------------------------------------- identity */
 

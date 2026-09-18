@@ -44,6 +44,24 @@ const DECIMAL_MARK = ',';
 
 /** `12500` in MMK → `"12.500 Ks"`; `1234567` in a 2-digit currency → `"12.345,67 $"`. */
 export function formatMoney(minor: number, currency: Currency): string {
+  return `${formatAmount(minor, currency)} ${currency.symbol}`;
+}
+
+/**
+ * The same number without the symbol: `12500` in MMK → `"12.500"`.
+ *
+ * It exists because of the one place in the app that renders a price *into an
+ * editable field* — the backoffice's product editor — and that field has a
+ * property nothing else does: whatever is put in it has to come back out of
+ * {@link parseMoney} as the same integer. Formatting with the symbol and then
+ * stripping it at the call site would work until the day a currency's symbol
+ * contains a digit or a separator, and the day it does, a price edits itself
+ * downwards and nobody notices until the bill.
+ *
+ * So the two renderings are one function with the symbol added by the other,
+ * and the round trip is a test case rather than an assumption.
+ */
+export function formatAmount(minor: number, currency: Currency): string {
   const rounded = Math.round(minor);
   const sign = rounded < 0 ? '-' : '';
   const abs = Math.abs(rounded);
@@ -53,13 +71,13 @@ export function formatMoney(minor: number, currency: Currency): string {
   // a scale of 1 to prove it would only invite somebody to "simplify" the two
   // into one expression that emits a trailing separator.
   if (currency.minorDigits === 0) {
-    return `${sign}${group(abs)} ${currency.symbol}`;
+    return `${sign}${group(abs)}`;
   }
 
   const scale = 10 ** currency.minorDigits;
   const whole = Math.floor(abs / scale);
   const fraction = (abs % scale).toString().padStart(currency.minorDigits, '0');
-  return `${sign}${group(whole)}${DECIMAL_MARK}${fraction} ${currency.symbol}`;
+  return `${sign}${group(whole)}${DECIMAL_MARK}${fraction}`;
 }
 
 /**

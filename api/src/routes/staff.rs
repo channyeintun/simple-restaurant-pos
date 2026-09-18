@@ -28,7 +28,8 @@ use worker::{Env, Method, Request, Response};
 use crate::db;
 use crate::http::{self, ApiResult};
 use crate::identity;
-use crate::middleware::Identity;
+use crate::middleware::{self, Identity};
+use crate::validate::{self as body, Str};
 use crate::routes::auth;
 
 /// `None` when nothing here matches, so the dispatcher can go on — which, since
@@ -44,18 +45,33 @@ pub async fn route(
         return None;
     }
     let action = segments.next();
+    let sub = segments.next();
     if segments.next().is_some() {
         return None;
     }
 
-    // `/staff/` splits to a single empty segment, which matches neither action
-    // and is not `/staff` either. It 404s, the same as `/staff/anything-else`.
-    match (req.method(), action) {
-        (Method::Get, None) => Some(list(env).await),
-        (Method::Post, Some("switch")) => Some(switch(req, env, identity).await),
-        (Method::Post, Some("signout")) => Some(signout(env, identity).await),
-        _ => None,
+    // `/staff/` splits to a single empty segment, which is neither an action
+    // nor an id. It 404s, the same as `/staff/anything-else`.
+    if action == Some("") {
+        return None;
     }
+
+    // The two named actions and an id occupy the same slot, and the collision
+    // is only theoretical: every staff id is `stf_` and twenty hex characters,
+    // so `PATCH /staff/switch` reaches `update` with an id that matches nothing
+    // and answers 404 — which is the truth about it.
+    Some(match (req.method(), action, sub) {
+        (Method::Get, None, None) => list(env).await,
+        (Method::Post, Some("switch"), None) => switch(req, env, identity).await,
+        (Method::Post, Some("signout"), None) => signout(env, identity).await,
+
+        (Method::Get, Some("roster"), None) => roster(env, identity).await,
+        (Method::Post, None, None) => create(req, env, identity).await,
+        (Method::Patch, Some(id), None) => update(req, env, identity, id).await,
+        (Method::Put, Some(id), Some("pin")) => set_pin(req, env, identity, id).await,
+
+        _ => return None,
+    })
 }
 
 /// The names on the PIN screen, in alphabetical order.
@@ -218,6 +234,237 @@ async fn mint(
 fn bad_pin() -> http::ApiError {
     http::ApiError::new(401, http::code::BAD_PIN, "That PIN does not match anybody here.")
 }
+
+/* ------------------------------------------------------------- the roster */
+
+/*
+ * Everything below this line is the backoffice's, and everything above it is
+ * the floor's. The split is worth naming because both halves live in one file
+ * and they answer to different people: the three routes above are how a tablet
+ * with nobody on it finds out who may sign in, and these four are how an owner
+ * decides that. `require_role` is the line between them, and it is written out
+ * in each handler rather than applied to the group, so a route's authentication
+ * story is readable without scrolling.
+ */
+
+/// Who may change the roster. The owner, and nobody else — this is the list
+/// that decides who can take money.
+const ADMINS: &[&str] = &["admin"];
+
+/// Everybody who has ever worked here, and whether they can sign in.
+///
+/// Not [`list`] with a flag on it. That one is the PIN screen's — three
+/// columns, active only, readable with nobody signed in — and the reason it is
+/// so narrow is that it is the one list an unattended tablet will show to
+/// whoever picks it up. Widening it for the backoffice would widen it there
+/// too. Two routes, two audiences, two gates.
+async fn roster(env: &Env, identity: &Identity) -> ApiResult<Response> {
+    middleware::require_role(identity, ADMINS)?;
+    let db_handle = crate::env::db(env)?;
+    Ok(Response::from_json(&db::list_staff_roster(&db_handle).await?)?)
+}
+
+/// Hire somebody: a name and a role.
+///
+/// No PIN, and the row lands with `pin_hash` NULL — which means this person
+/// cannot sign in anywhere yet. That is the honest state rather than an
+/// omission: the hash can only be computed where `AUTH_SECRET` is, setting one
+/// is a separate act done far more often than hiring, and a create body
+/// carrying four digits is four digits in whatever log captured the request.
+/// The roster shows "No PIN" beside the name until somebody sets one.
+async fn create(req: &mut Request, env: &Env, identity: &Identity) -> ApiResult<Response> {
+    middleware::require_role(identity, ADMINS)?;
+    let raw = body::read_json(req).await?;
+    let fields = body::object(&raw)?;
+    // `createStaffSchema`, in its key order.
+    let name = fields.string("name", &Str::name(40, "Name is required"))?;
+    let role = fields.enum_of("role", ROLES)?;
+
+    let db_handle = crate::env::db(env)?;
+    let row: Option<db::StaffRosterRow> = db_handle
+        .prepare(
+            "INSERT INTO staff (id, name, pin_hash, role, active, created_at)
+        VALUES (?1, ?2, NULL, ?3, 1, ?4)
+        RETURNING id, name, role, active, pin_hash IS NOT NULL AS has_pin, created_at",
+        )
+        .bind(&[
+            db::text(&http::new_id("stf")),
+            db::text(&name),
+            db::text(&role),
+            db::text(&http::now_iso()),
+        ])?
+        .first(None)
+        .await?;
+
+    match row {
+        Some(row) => Ok(Response::from_json(&db::to_staff_roster_entry(&row))?.with_status(201)),
+        None => Err(http::internal()),
+    }
+}
+
+/// Rename somebody, change what they may do, or strike them off.
+///
+/// `active = 0` is the only way anybody leaves. Rounds and payments point at
+/// this row by id — `ON DELETE RESTRICT` in `0001_init.sql` refuses a delete
+/// outright — and a name struck off still has to render on last month's checks.
+///
+/// ## The guard in the `WHERE` clause
+///
+/// A restaurant with no active admin is a restaurant nobody can add one to: the
+/// only route that creates staff is this file's, and it needs the role that has
+/// just been taken away. The recovery is a hand-written `UPDATE` against D1 at
+/// the console, which is not a thing to leave an owner one mistap from needing.
+///
+/// So the statement refuses it, rather than a read-then-decide pair around it.
+/// Two tabs open on the roster, each demoting a different one of the last two
+/// admins, would both pass a check that ran before either wrote. The condition
+/// below is evaluated by SQLite as part of the write, against the table as it
+/// is at that moment, and the row simply does not match — which is the same
+/// mechanism `idx_checks_open_table` uses to settle two waiters and the same
+/// reason: a rule that matters belongs in the database.
+///
+/// Its two arms read as "this row is still an active admin afterwards" or
+/// "somebody else is".
+async fn update(
+    req: &mut Request,
+    env: &Env,
+    identity: &Identity,
+    id: &str,
+) -> ApiResult<Response> {
+    middleware::require_role(identity, ADMINS)?;
+    let raw = body::read_json(req).await?;
+    let fields = body::object(&raw)?;
+    if fields.is_empty() {
+        return Err(http::bad_request("Give at least one field to change"));
+    }
+    let name = fields.opt_string("name", &Str::name(40, "Name is required"))?;
+    let role = fields.opt_enum("role", ROLES)?;
+    let active = fields.opt_bool("active")?;
+
+    let db_handle = crate::env::db(env)?;
+    let row: Option<db::StaffRosterRow> = db_handle
+        .prepare(
+            "UPDATE staff
+        SET name = COALESCE(?2, name),
+            role = COALESCE(?3, role),
+            active = COALESCE(?4, active)
+        WHERE id = ?1
+          AND ((COALESCE(?3, role) = 'admin' AND COALESCE(?4, active) = 1)
+               OR EXISTS (SELECT 1 FROM staff
+                           WHERE active = 1 AND role = 'admin' AND id <> ?1))
+        RETURNING id, name, role, active, pin_hash IS NOT NULL AS has_pin, created_at",
+        )
+        .bind(&[
+            db::text(id),
+            db::opt_text(name.as_deref()),
+            db::opt_text(role.as_deref()),
+            db::opt_bool(active),
+        ])?
+        .first(None)
+        .await?;
+
+    if let Some(row) = row {
+        return Ok(Response::from_json(&db::to_staff_roster_entry(&row))?);
+    }
+
+    // Nothing matched, and the two reasons need different words. One read, only
+    // on the failure path, which is the whole cost of telling an owner why the
+    // button did nothing instead of leaving them to guess.
+    match db_handle
+        .prepare("SELECT 1 AS found FROM staff WHERE id = ?1")
+        .bind(&[db::text(id)])?
+        .first::<serde_json::Value>(None)
+        .await?
+    {
+        Some(_) => Err(http::conflict(
+            "Somebody has to be able to manage this restaurant. Make another manager first.",
+        )),
+        None => Err(http::not_found("No such person")),
+    }
+}
+
+/// Set or replace somebody's four digits.
+///
+/// ## Why this route has to check the PIN is not already in use
+///
+/// `POST /staff/switch` is given only a PIN. There is no "pick your name first"
+/// step — that is two taps at a counter with a queue at it — so **the digits
+/// are the identifier**, and the switch resolves them by computing
+/// `HMAC-SHA256(AUTH_SECRET, staff_id || pin)` for every active member of staff
+/// and seeing which one lands.
+///
+/// The staff id is inside the hashed message, which is what stops a leaked
+/// database being one lookup table for everybody. It also means two people who
+/// both choose 1234 store two different hashes, so the database cannot see the
+/// collision and no unique index would catch it — and the switch would then
+/// resolve those four digits to whichever of them the scan reached first,
+/// permanently, with the other unable to sign in anywhere and no message
+/// anywhere saying why.
+///
+/// This is the only place that collision can be caught, so it is caught here:
+/// the same scan the switch does, over everybody *else*, before the write.
+/// `0001_init.sql` says so at the column and this is the code it is describing.
+///
+/// The check runs against active staff only, matching `staff_for_pin` — an
+/// inactive person cannot be resolved by the switch, so their digits are not
+/// taken. Re-using them the day somebody leaves is fine and is what a small
+/// restaurant will do.
+async fn set_pin(
+    req: &mut Request,
+    env: &Env,
+    identity: &Identity,
+    id: &str,
+) -> ApiResult<Response> {
+    middleware::require_role(identity, ADMINS)?;
+    let raw = body::read_json(req).await?;
+    // The same four-digit rule the keypad holds itself to, and the same words:
+    // `setPinSchema` and `staffSwitchSchema` share `pinSchema` precisely so
+    // that what an admin may set and what a waiter may type cannot drift.
+    let pin = validate(&raw)?;
+
+    let db_handle = crate::env::db(env)?;
+    let secret = crate::env::auth_secret(env);
+
+    for candidate in &db::staff_for_pin(&db_handle).await? {
+        if candidate.id == id {
+            // Their own current PIN. Setting the digits somebody already has is
+            // a no-op an admin may well perform by accident, and refusing it as
+            // "already in use" would be both confusing and untrue.
+            continue;
+        }
+        if identity::verify_pin(&secret, &candidate.id, &pin, &candidate.pin_hash)? {
+            // Whose it is stays unsaid. The roster is on screen in front of the
+            // admin, so naming the person would only confirm a guess about four
+            // digits that is otherwise theirs alone.
+            return Err(http::conflict("Somebody already uses that PIN. Pick another."));
+        }
+    }
+
+    let hash = identity::pin_hash(&secret, id, &pin)?;
+    let row: Option<db::StaffRosterRow> = db_handle
+        .prepare(
+            "UPDATE staff
+        SET pin_hash = ?2
+        WHERE id = ?1 AND active = 1
+        RETURNING id, name, role, active, pin_hash IS NOT NULL AS has_pin, created_at",
+        )
+        .bind(&[db::text(id), db::text(&hash)])?
+        .first(None)
+        .await?;
+
+    match row {
+        Some(row) => Ok(Response::from_json(&db::to_staff_roster_entry(&row))?),
+        // `active = 1` is in the `WHERE`, so this also covers somebody who has
+        // left: a PIN for a person who cannot sign in is a PIN that quietly
+        // reserves four digits nobody can use.
+        None => Err(http::not_found("No such person")),
+    }
+}
+
+/// The three roles, which are the three the `CHECK` constraint in
+/// `0001_init.sql` permits. Written once so a typo here would be a typo the
+/// database also refuses, rather than a fourth role that fails on insert.
+const ROLES: &[&str] = &["waiter", "cashier", "admin"];
 
 /* --------------------------------------------------------- body validation */
 

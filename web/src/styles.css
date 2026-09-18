@@ -570,3 +570,237 @@ md-outlined-icon-button {
   justify-content: center;
   gap: 4px;
 }
+
+/* ------------------------------------------------------------- backoffice */
+
+/*
+ * The section switcher: a secondary tab bar, drawn by hand.
+ *
+ * `md-tabs` would do this and is not imported, because it would be the only
+ * place in the app that uses it and it brings a scroller, a ripple and a
+ * sliding indicator for six words that never move. What a tab bar actually has
+ * to be is a row of targets with one of them marked, and a list of buttons in a
+ * `tablist` is that — with the states reported to a screen reader by
+ * `aria-selected` rather than by the colour, which is the part `md-tabs` would
+ * genuinely have got right for free and which is therefore written out here.
+ *
+ * It scrolls sideways on a narrow tablet rather than wrapping to two rows: a
+ * tab bar that changes height when you pick a different tab moves everything
+ * under it, and the thing under it is the list somebody is reading.
+ */
+.tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  /* No horizontal scrollbar on a touch screen, and no thin grey line above the
+     content on a desktop where the list happens to overflow. */
+  scrollbar-width: none;
+  background: var(--md-sys-color-surface);
+  border-radius: var(--pos-radius-card);
+  box-shadow: var(--pos-shadow-card);
+  padding: 4px;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  flex: 1 0 auto;
+  min-height: var(--pos-touch);
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--pos-radius-row);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/*
+ * The selected tab is a filled container rather than an underline. An underline
+ * is two pixels of colour at the bottom edge of a control somebody is about to
+ * put a thumb over; a filled pill is still visible around the outside of it.
+ */
+.tab[aria-selected='true'] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+/* The heading above a list, with its one action on the right. */
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pos-gap);
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+/*
+ * A list of editable rows.
+ *
+ * Rows are separated by the canvas showing through rather than by rules: the
+ * card is white, the gap is the background colour, and the result reads as a
+ * list without a border on every row. It also means a retired row can dim
+ * without the separator dimming with it.
+ */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: var(--pos-radius-card);
+  overflow: hidden;
+}
+
+.list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pos-gap);
+  min-height: var(--pos-touch);
+  padding: 12px 16px;
+  background: var(--md-sys-color-surface);
+}
+
+/*
+ * A retired row is faded, not hidden and not struck through. It is still a real
+ * row an owner can bring back, and a strikethrough would say "deleted", which
+ * is the one thing this app never does.
+ */
+.list-row[data-retired='true'] .list-row-text {
+  opacity: 0.55;
+}
+
+.list-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Lets a long product name shrink rather than pushing the controls off the
+     end of the row. */
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+
+.list-row-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.list-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.list-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+/*
+ * A small piece of state next to a name: "Retired", "No PIN", "Not set up".
+ *
+ * Three tones and no more. `warn` is the amber that means "unfinished" all over
+ * this app — an open check, a tablet nobody has claimed — and `ok` is the same
+ * green a paid check gets. A badge that invents a fourth colour is a badge
+ * whose meaning has to be learned rather than recognised.
+ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: var(--pos-radius-pill);
+  background: var(--md-sys-color-surface-variant);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge[data-tone='warn'] {
+  background: var(--pos-open-container);
+  color: var(--pos-open);
+}
+
+.badge[data-tone='ok'] {
+  background: var(--pos-paid-container);
+  color: var(--pos-paid);
+}
+
+/* One number, large, with its label under it — the day's takings and its three
+   parts. Bigger than any type in the app, because it is the only thing on the
+   screen a manager crossed the room to read. */
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-value {
+  font-size: 2.2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.stat-label {
+  font-size: 0.9rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.stat-small .stat-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+/* The form inside an editor dialog: one field per row, full width. */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pos-gap);
+  /* Material's text field is inline-flex and shrinks to its label otherwise. */
+  min-width: min(22rem, 70vw);
+}
+
+.form md-outlined-text-field {
+  width: 100%;
+}
+
+.form-label {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/*
+ * A claim link, shown once and never again.
+ *
+ * Monospace and wrapping on any character, because it is a URL with a 43-
+ * character nonce on the end that somebody may have to read out over the phone
+ * — and `.selectable` because this is one of the two places in the app where
+ * the whole point is to be able to select the text.
+ */
+.link-box {
+  padding: 12px 14px;
+  border-radius: var(--pos-radius-row);
+  background: var(--md-sys-color-surface-container-high);
+  font-family: var(--pos-typeface-numeric);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

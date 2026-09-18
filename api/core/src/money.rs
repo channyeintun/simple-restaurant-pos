@@ -48,6 +48,20 @@ const DECIMAL_MARK: char = ',';
 /// `12500` in MMK -> `"12.500 Ks"`; `1234567` in a 2-digit currency ->
 /// `"12.345,67 $"`.
 pub fn format_money(minor: i64, currency: &Currency) -> String {
+    format!("{} {}", format_amount(minor, currency), currency.symbol)
+}
+
+/// The same number without the symbol: `12500` in MMK -> `"12.500"`.
+///
+/// The twin of `formatAmount` in `money.ts`, and it exists for a reason that
+/// lives entirely on that side — the backoffice renders a price into an
+/// editable field, and what goes into that field has to come back out of
+/// `parseMoney` as the same integer. It is written here anyway, because the two
+/// halves of this module are held to the same test cases and a function that
+/// existed on one side only would be a hole in that: the day somebody changes
+/// how a number is grouped, they would change it in one place and the twin
+/// tests would still pass.
+pub fn format_amount(minor: i64, currency: &Currency) -> String {
     let sign = if minor < 0 { "-" } else { "" };
     // `unsigned_abs` rather than `abs`, because `i64::MIN.abs()` panics. No
     // price is ever going to be `i64::MIN`, but a total is a sum of things and
@@ -59,14 +73,14 @@ pub fn format_money(minor: i64, currency: &Currency) -> String {
     // by a scale of 1 to prove it would only invite somebody to "simplify" the
     // two into one expression that emits a trailing separator.
     if currency.minor_digits == 0 {
-        return format!("{sign}{} {}", grouped(abs), currency.symbol);
+        return format!("{sign}{}", grouped(abs));
     }
 
     let scale = currency.scale() as u64;
     let whole = grouped(abs / scale);
     let width = currency.minor_digits.min(Currency::MAX_MINOR_DIGITS) as usize;
     let fraction = abs % scale;
-    format!("{sign}{whole}{DECIMAL_MARK}{fraction:0width$} {}", currency.symbol)
+    format!("{sign}{whole}{DECIMAL_MARK}{fraction:0width$}")
 }
 
 /// Tolerant of what people actually type: `"12500"`, `"12,500"`, `"12 500"`,
@@ -297,6 +311,17 @@ mod tests {
         assert_eq!(format_money(100, &usd()), "1,00 $");
         assert_eq!(format_money(5, &usd()), "0,05 $");
         assert_eq!(format_money(0, &usd()), "0,00 $");
+    }
+
+    /// The twins of the `formatAmount` cases in `logic.test.ts`, including the
+    /// two round trips — which are the reason the function exists.
+    #[test]
+    fn an_amount_renders_without_the_symbol() {
+        assert_eq!(format_amount(12_500, &mmk()), "12.500");
+        assert_eq!(format_amount(0, &mmk()), "0");
+        assert_eq!(format_amount(1_234_567, &usd()), "12.345,67");
+        assert_eq!(parse_money(&format_amount(4_500, &mmk()), &mmk()), Some(4_500));
+        assert_eq!(parse_money(&format_amount(1_234_567, &usd()), &usd()), Some(1_234_567));
     }
 
     /// Everything a person might type for twelve and a half thousand kyat.

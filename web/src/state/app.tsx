@@ -4,9 +4,11 @@ import {
   type Me,
   type StaffRole,
   DEFAULT_CONFIG,
+  formatAmount,
   formatClock,
   formatDateTime,
   formatMoney,
+  parseMoney,
 } from '@pos/shared';
 import { useQueryClient } from '@tanstack/solid-query';
 import type { Accessor } from 'solid-js';
@@ -66,6 +68,27 @@ export interface AppValue {
   config: Accessor<AppConfig>;
   /** Integer minor units in, `12.500 Ks` out. The only way to write money. */
   money(minor: number): string;
+  /**
+   * The same number with no symbol on it — `12.500` — for the one field in the
+   * app somebody types a price into.
+   *
+   * It is a pair with {@link AppValue.parseAmount}, and the pair is the point:
+   * what this renders into the field is exactly what that reads back out, so a
+   * manager who opens a product and presses Save without touching anything
+   * cannot have repriced it.
+   */
+  amount(minor: number): string;
+  /**
+   * What somebody typed, as integer minor units, or null when it is not an
+   * amount at all.
+   *
+   * Tolerant of `12500`, `12,500`, `12 500`, `12.500` and `12.5k`, because that
+   * is what people actually type — `shared/src/money.ts` sets out the two rules
+   * that settle the ambiguous cases. Null is shown as a validation error beside
+   * the field and never as a zero: a price that silently became nothing is a
+   * product given away for the rest of the month.
+   */
+  parseAmount(text: string): number | null;
   /** `2026-09-18 19:30`, in the restaurant's own offset. */
   dateTime(instant: Date | string | number): string;
   /** `19:30` — the same clock, when the date is already obvious from context. */
@@ -142,6 +165,8 @@ export function useApp(): AppValue {
     staff,
     config,
     money: (minor) => formatMoney(minor, config().currency),
+    amount: (minor) => formatAmount(minor, config().currency),
+    parseAmount: (text) => parseMoney(text, config().currency),
     dateTime: (instant) => formatDateTime(instant, config().tzOffsetMinutes),
     clock: (instant) => formatClock(instant, config().tzOffsetMinutes),
     adopt,

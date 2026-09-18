@@ -10,5 +10,8 @@
 //! how an unmatched request reaches the gate and answers 401 rather than 404.
 
 pub mod auth;
+pub mod catalogue;
+pub mod devices;
 pub mod realtime;
+pub mod reports;
 pub mod staff;

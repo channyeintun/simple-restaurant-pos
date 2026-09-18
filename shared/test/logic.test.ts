@@ -1,4 +1,4 @@
-import { formatMoney, parseMoney, sumMinor } from '../src/money.ts';
+import { formatAmount, formatMoney, parseMoney, sumMinor } from '../src/money.ts';
 import {
   formatClock,
   formatDateTime,
@@ -58,6 +58,20 @@ check('MMK negative keeps the sign in front', formatMoney(-2_500, MMK), '-2.500 
 // decimal mark so it can never be confused with the `.` between groups.
 check('2 digits: 1234567 -> 12.345,67 $', formatMoney(1_234_567, USD), '12.345,67 $');
 check('2 digits: 100 is one whole unit', formatMoney(100, USD), '1,00 $');
+
+// The same number without the symbol, which is what goes into the backoffice's
+// price field. The round trips below are the point of it existing: whatever is
+// rendered into that field has to come back out of `parseMoney` unchanged, or a
+// manager who opens a product and presses Save has silently repriced it.
+check('amount without the symbol', formatAmount(12_500, MMK), '12.500');
+check('amount zero', formatAmount(0, MMK), '0');
+check('2 digits: amount keeps its fraction', formatAmount(1_234_567, USD), '12.345,67');
+check('MMK price round-trips through the editor', parseMoney(formatAmount(4_500, MMK), MMK), 4_500);
+check(
+  '2-digit price round-trips through the editor',
+  parseMoney(formatAmount(1_234_567, USD), USD),
+  1_234_567,
+);
 check('2 digits: 5 pads to 0,05', formatMoney(5, USD), '0,05 $');
 check('2 digits: zero', formatMoney(0, USD), '0,00 $');
 

@@ -42,6 +42,7 @@ mod js;
 mod middleware;
 mod realtime;
 mod routes;
+mod validate;
 
 use worker::{event, Context, Env, Method, Request, Response, Result as WorkerResult};
 
@@ -101,13 +102,34 @@ async fn dispatch(req: &mut Request, env: &Env) -> ApiResult<Response> {
     // milestone-1 shape and not this one's.
     let identity = middleware::require_device(req, env).await?;
 
-    // 6. `/staff` — the PIN screen's list, and the two routes that move a
-    // person on and off this tablet.
+    // 6. `/staff` — the PIN screen's list, the two routes that move a person on
+    // and off this tablet, and the roster an admin hires from.
     if let Some(answer) = routes::staff::route(req, env, &identity).await {
         return answer;
     }
 
-    // 7. Not found. The path, with no query string, so a 404 in a log does not
+    // 7. `/tables`, `/categories`, `/products` — the menu and the floor. Read
+    // by anybody signed in, because a waiter's grid is drawn from them;
+    // written by an admin alone.
+    if let Some(answer) = routes::catalogue::route(req, env, &identity).await {
+        return answer;
+    }
+
+    // 8. `/devices` — the tablet list and the claim links, admin throughout.
+    // It sits after the catalogue rather than beside `/auth/claim` because
+    // *minting* a link is an administrative act on a claimed device, while
+    // *redeeming* one is how a device gets claimed in the first place; the two
+    // are on opposite sides of the gate for that reason.
+    if let Some(answer) = routes::devices::route(req, env, &identity).await {
+        return answer;
+    }
+
+    // 9. `/reports` — the day's takings, and the whole of this app's reporting.
+    if let Some(answer) = routes::reports::route(req, env, &identity).await {
+        return answer;
+    }
+
+    // 10. Not found. The path, with no query string, so a 404 in a log does not
     // carry whatever was in the parameters.
     Err(http::not_found(format!("No route for {path}")))
 }
