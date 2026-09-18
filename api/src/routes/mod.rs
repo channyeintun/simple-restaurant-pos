@@ -11,7 +11,9 @@
 
 pub mod auth;
 pub mod catalogue;
+pub mod checks;
 pub mod devices;
+pub mod print_jobs;
 pub mod realtime;
 pub mod reports;
 pub mod staff;

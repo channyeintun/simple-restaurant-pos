@@ -7,6 +7,8 @@ import {
   toZonedParts,
   zonedDateKey,
 } from '../src/time.ts';
+import { checkTotalMinor, lineTotalMinor } from '../src/totals.ts';
+import { renderTicket } from '../src/ticket.ts';
 import type { Currency } from '../src/config.ts';
 
 /**
@@ -183,6 +185,142 @@ check('crosses a year end', zonedDateKey('2026-12-31T17:35:00Z', MM), '2027-01-0
 // A negative offset has to work as well, since the var is signed and the Rust
 // twin does this arithmetic in i64.
 check('west of UTC', zonedDateKey('2026-09-18T02:00:00Z', -300), '2026-09-17');
+
+// --- totals ----------------------------------------------------------------
+// What a check comes to. Every case below has a named `#[test]` twin in
+// `api/core/src/totals.rs` with the same inputs and the same expected value.
+
+check('a line is its price times its quantity', lineTotalMinor(4_500, 1), 4_500);
+check('three of a line', lineTotalMinor(4_500, 3), 13_500);
+check('a free line', lineTotalMinor(0, 12), 0);
+// The case that is the whole argument for integer minor units.
+check('115 x 7 is exactly 805, not 804', lineTotalMinor(115, 7), 805);
+
+const live = (priceMinorSnapshot: number, qty: number) => ({
+  priceMinorSnapshot,
+  qty,
+  voidedAt: null,
+});
+const struck = (priceMinorSnapshot: number, qty: number) => ({
+  priceMinorSnapshot,
+  qty,
+  voidedAt: '2026-09-18T13:00:00.000Z',
+});
+
+check('an empty check comes to nothing', checkTotalMinor([]), 0);
+check(
+  'a check is the sum of its live lines',
+  checkTotalMinor([live(4_500, 3), live(2_500, 1), live(800, 2)]),
+  17_600,
+);
+// A voided line is still a row on the bill's paper trail. What it is not is
+// money owed.
+check(
+  'a voided line is not money owed',
+  checkTotalMinor([live(4_500, 3), struck(2_500, 1), live(800, 2)]),
+  15_100,
+);
+// Still paid, for zero, and closed — which is what frees the table.
+check('a wholly voided check comes to zero', checkTotalMinor([struck(4_500, 3), struck(800, 2)]), 0);
+// The schema's own maxima multiplied out: `minorSchema` stops at a billion and
+// `qty` at 99. It has to be exact as a JavaScript number, or the twin's answer
+// is only approximately the same.
+check('the schema maxima multiply exactly', checkTotalMinor([live(1_000_000_000, 99)]), 99_000_000_000);
+check('and are inside the exact-integer range', 99_000_000_000 < 2 ** 53, true);
+
+// --- the kitchen ticket ----------------------------------------------------
+// `2026-09-18T13:00:00Z` is 19:30 in Yangon — the same instant the clock cases
+// above use, as the epoch stamp both twins take.
+const AT_MS = 1_789_736_400_000;
+
+const ticketInput = (
+  kind: 'ticket' | 'void',
+  seq: number,
+  tableName: string | null,
+  lines: { name: string; qty: number; note: string | null }[],
+  atMs = AT_MS,
+) => ({ kind, seq, tableName, staffName: 'Su', atMs, lines });
+
+check(
+  'a round ticket carries its number, table, time and lines',
+  renderTicket(
+    ticketInput('ticket', 2, 'Table 4', [
+      { qty: 2, name: 'Chicken curry', note: null },
+      { qty: 1, name: 'Mohinga', note: 'no chilli' },
+    ]),
+    MM,
+  ),
+  {
+    kind: 'ticket',
+    seq: 2,
+    table: 'Table 4',
+    time: '19:30',
+    staff: 'Su',
+    lines: [
+      { qty: 2, name: 'Chicken curry', note: null },
+      { qty: 1, name: 'Mohinga', note: 'no chilli' },
+    ],
+  },
+);
+
+// Takeaway has no table, and null is what the agent renders its own word for —
+// the doc holds no prose, so it cannot hold "Takeaway".
+check('takeaway has no table', renderTicket(ticketInput('ticket', 1, null, []), MM).table, null);
+check(
+  'a blank table name is takeaway too',
+  renderTicket(ticketInput('ticket', 1, '   ', []), MM).table,
+  null,
+);
+
+// A waiter who opened the note field and typed nothing has not said anything.
+check(
+  'empty and blank notes are no note, and a note is trimmed',
+  renderTicket(
+    ticketInput('ticket', 1, 'Table 1', [
+      { qty: 1, name: 'Tea', note: '' },
+      { qty: 1, name: 'Water', note: '   ' },
+      { qty: 1, name: 'Rice', note: '  extra  ' },
+    ]),
+    MM,
+  ).lines.map((line) => line.note),
+  [null, null, 'extra'],
+);
+
+check(
+  'a void names the round it undoes',
+  renderTicket(ticketInput('void', 12, 'Table 4', [{ qty: 1, name: 'Pork curry', note: null }]), MM),
+  {
+    kind: 'void',
+    seq: 12,
+    table: 'Table 4',
+    time: '19:30',
+    staff: 'Su',
+    lines: [{ qty: 1, name: 'Pork curry', note: null }],
+  },
+);
+
+// The minute either side of local midnight, which a fixed offset gets wrong if
+// it is applied in the wrong direction.
+check(
+  'a minute to local midnight',
+  renderTicket(ticketInput('ticket', 1, null, [], 1_789_752_540_000), MM).time,
+  '23:59',
+);
+check(
+  'and local midnight itself',
+  renderTicket(ticketInput('ticket', 1, null, [], 1_789_752_600_000), MM).time,
+  '00:00',
+);
+
+// A 60-character name is the schema's maximum and is printed whole. Where the
+// paper runs out is the agent's problem — it knows how many columns it has and
+// this does not.
+check(
+  'a long name is not truncated',
+  renderTicket(ticketInput('ticket', 1, 'Table 1', [{ qty: 1, name: 'a'.repeat(60), note: null }]), MM)
+    .lines[0]!.name.length,
+  60,
+);
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

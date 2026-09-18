@@ -347,6 +347,70 @@ export const roundSchema = z.object({
 });
 export type Round = z.infer<typeof roundSchema>;
 
+/**
+ * One tap of **Send to kitchen**.
+ *
+ * The client posts this to `/rounds` — not to `/checks/:id/rounds` — and the
+ * difference is the whole design of the route. On the first send of a seating
+ * there is no check id yet, and an "open the table first" step would create the
+ * state this schema says does not exist: a check with no rounds on it, sitting
+ * open because somebody tapped a table and walked away. **The table is the
+ * identity**, and the Worker opens a check for it if there is not one already.
+ */
+export const sendRoundSchema = z.object({
+  /**
+   * The table this round is for, or null.
+   *
+   * Exactly one of `tableId` and `checkId` may be given, and the three cases
+   * are the three ways a round starts:
+   *
+   *   * a **table** — the usual one. The Worker finds the table's open check or
+   *     opens one, atomically, so two waiters tapping Send on table 4 in the
+   *     same second end up with one bill and two tickets rather than two bills
+   *     and half the food on each.
+   *   * a **check** — adding to a takeaway order that is already open. A
+   *     takeaway check has no table to find it by, so the client names it.
+   *   * **neither** — a new takeaway or counter sale, which opens a check with
+   *     no table under it. There can be any number of those at once, which is
+   *     why `idx_checks_open_table` exempts NULL.
+   */
+  tableId: idSchema.nullable(),
+  /** The open check to add to, for a takeaway order that has one. */
+  checkId: idSchema.nullable(),
+  /**
+   * The key this tablet minted when the button was pressed, and re-sends
+   * unchanged if it has to ask again.
+   *
+   * It exists for one failure: the request commits and the reply is lost on the
+   * way back. The tablet cannot tell that from a request that never arrived,
+   * and the two need opposite responses — retrying the first prints the food
+   * twice, not retrying the second means nobody cooks it. So the tablet decides
+   * once, and the Worker recognises the repeat. `0002_send_and_void.sql` is the
+   * unique index that makes it true even for two copies in flight at once.
+   *
+   * Minted per **attempt**, not per retry: regenerating it on the Retry button
+   * is exactly the bug this prevents.
+   */
+  clientKey: z.string().min(8).max(64),
+  /**
+   * What to cook. At least one line — a round with nothing on it is a blank
+   * slip of paper in the kitchen — and the prices are deliberately not here:
+   * the Worker reads them from the menu and snapshots them, so a tablet holding
+   * yesterday's cached prices cannot charge yesterday's prices.
+   */
+  items: z
+    .array(
+      z.object({
+        productId: idSchema,
+        qty: z.number().int().min(1).max(99),
+        note: z.string().max(120).nullable(),
+      }),
+    )
+    .min(1, 'Add something to the order first')
+    .max(60),
+});
+export type SendRoundInput = z.infer<typeof sendRoundSchema>;
+
 /* -------------------------------------------------------------------- item */
 
 /**
@@ -364,7 +428,17 @@ export type Round = z.infer<typeof roundSchema>;
 export const itemSchema = z.object({
   id: idSchema,
   roundId: idSchema,
-  productId: idSchema,
+  /**
+   * Null when the product row it came from has been cleaned out by hand.
+   *
+   * `items.product_id` is `ON DELETE SET NULL` — see `0001_init.sql` — and the
+   * snapshots below are what make that safe: the line still reads and still
+   * totals with nothing behind it. Declaring it non-null here would mean one
+   * deleted product turns a whole check into a parse failure on the cashier's
+   * screen, which is a worse outcome than a line that cannot be traced back to
+   * the menu.
+   */
+  productId: idSchema.nullable(),
   nameSnapshot: z.string().min(1).max(60),
   priceMinorSnapshot: minorSchema,
   qty: z.number().int().min(1).max(99),
@@ -400,6 +474,28 @@ export const paymentSchema = z.object({
 });
 export type Payment = z.infer<typeof paymentSchema>;
 
+/**
+ * Settling a check: how the money arrived, and what the cashier believed the
+ * total to be.
+ *
+ * `expectedTotalMinor` is not belt and braces. A cashier reads a total off the
+ * screen, takes that much cash, and taps Take payment — and in between, a
+ * waiter at the table can send another round or void a line. Without this the
+ * check closes at whatever it happens to come to now, which is a customer
+ * charged for a dish they did not order or a dish given away. With it, the
+ * Worker refuses and the screen shows the new figure, which is the only honest
+ * thing to do: the person holding the money has to agree with the number.
+ *
+ * The amount taken is **not** in the body. It is the check's own total,
+ * computed by the Worker, so there is no route by which a client can decide
+ * what a customer paid.
+ */
+export const payCheckSchema = z.object({
+  method: paymentMethodSchema,
+  expectedTotalMinor: minorSchema,
+});
+export type PayCheckInput = z.infer<typeof payCheckSchema>;
+
 /* --------------------------------------------------------------- print job */
 
 /** A ticket for a new round, or a void notice for a line taken off one. */
@@ -431,6 +527,174 @@ export const printJobSchema = z.object({
   printedAt: isoSchema.nullable(),
 });
 export type PrintJob = z.infer<typeof printJobSchema>;
+
+/**
+ * What a ticket says, as the Worker renders it and the agent prints it.
+ *
+ * The rendering rules live twice — `shared/src/ticket.ts` and
+ * `api/core/src/ticket.rs` — and this is the wire shape they both produce. It
+ * carries **no prose**: a round number, a table, a time, a name and some lines.
+ * The words around them come from the i18n catalogue at the moment of printing,
+ * which is what lets the ticket be printed in Burmese without either half of
+ * the twin holding a message catalogue.
+ */
+export const ticketDocSchema = z.object({
+  kind: printJobKindSchema,
+  seq: z.number().int().min(1),
+  /** The table's name, or null for takeaway. */
+  table: z.string().nullable(),
+  /** `19:30`, already in the restaurant's own offset. */
+  time: z.string(),
+  staff: z.string(),
+  lines: z.array(
+    z.object({
+      qty: z.number().int().min(1),
+      name: z.string(),
+      note: z.string().nullable(),
+    }),
+  ),
+});
+
+/**
+ * A pending job, with everything needed to print it or to complain about it.
+ *
+ * One shape for two readers, which is unusual here and is the right call: the
+ * printer agent polls this to get something to print, and the cashier's failure
+ * banner reads the same list to say which table's food the kitchen never heard
+ * about. They want the same facts — which round, which table, what went wrong —
+ * and a second, nearly identical shape would be one more place for the two to
+ * disagree about what a stuck ticket is.
+ *
+ * Carrying the rendered `ticket` is what keeps the agent free of rules
+ * entirely: it holds no schema, no totals and no idea what a round is. A doc
+ * comes in and ESC/POS bytes go out.
+ */
+export const printJobViewSchema = z.object({
+  id: idSchema,
+  roundId: idSchema,
+  kind: printJobKindSchema,
+  status: printJobStatusSchema,
+  attempts: z.number().int().min(0),
+  lastError: z.string().max(300).nullable(),
+  createdAt: isoSchema,
+  printedAt: isoSchema.nullable(),
+  /** So the cashier's banner can name the table rather than a job id. */
+  tableId: idSchema.nullable(),
+  tableName: z.string().nullable(),
+  ticket: ticketDocSchema,
+});
+export type PrintJobView = z.infer<typeof printJobViewSchema>;
+
+/**
+ * The agent saying it could not print.
+ *
+ * `printFailureSchema` and not `printJobFailedSchema`, which `events.ts`
+ * already has: that one is the realtime payload the cashier's banner is raised
+ * by, and this is the request body that may eventually cause it. They are two
+ * ends of the same event and sharing a name would make the barrel ambiguous —
+ * which is how the clash was found, and it is a fair warning rather than a
+ * technicality.
+ *
+ * `error` is nullable because a printer can fail without saying anything useful
+ * — a socket that simply never opened — and a banner that waits for a good
+ * message is a banner that never appears.
+ */
+export const printFailureSchema = z.object({
+  error: z.string().max(300).nullable(),
+});
+export type PrintFailureInput = z.infer<typeof printFailureSchema>;
+
+/**
+ * Compile-time proof that {@link ticketDocSchema} says exactly what
+ * `renderTicket` produces.
+ *
+ * The schema is here because it is a wire model and this is where wire models
+ * live; the type is in `ticket.ts` because that is where the rule that produces
+ * it lives. This is the line that stops the two drifting — add a field to the
+ * doc and forget the schema, and the build fails here rather than the agent
+ * silently printing a ticket with a piece missing.
+ *
+ * The import is type-only, so it is erased and cannot make a runtime cycle
+ * between these two modules.
+ */
+type TicketDocIsTheSchema = Assert<
+  Exact<z.infer<typeof ticketDocSchema>, import('./ticket.js').TicketDoc>
+>;
+export type { TicketDocIsTheSchema };
+
+type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type Assert<T extends true> = T;
+
+/* ------------------------------------------------------- what a screen reads */
+
+/*
+ * The three shapes below are not tables. They are what a screen needs in one
+ * response, assembled by the Worker out of several — and they exist because the
+ * alternative is a tablet issuing four requests to draw one card and then
+ * joining the results itself, which is four times the free tier's request
+ * budget to arrive at the same picture more slowly and with more ways to be
+ * half-right.
+ *
+ * Every id that a screen would have to resolve against another list arrives
+ * with its name beside it, for the same reason the realtime payloads carry
+ * names: the cashier's board has no roster to look a `staff_id` up in, and a
+ * dash where a waiter's name should be is worse than the extra column.
+ */
+
+/**
+ * One open check, as a card on the cashier's board and a tile in the waiter's
+ * table grid.
+ *
+ * Deliberately not the whole check. A board shows ten of these at once and
+ * needs four facts about each; sending every line of every one of them would be
+ * the entire evening's ordering on a screen where none of it is legible.
+ */
+export const checkSummarySchema = z.object({
+  id: idSchema,
+  tableId: idSchema.nullable(),
+  /** Null for takeaway, where the screen shows its own word instead. */
+  tableName: z.string().nullable(),
+  openedByName: z.string(),
+  openedAt: isoSchema,
+  /** How many rounds have gone to the kitchen. Roughly how far along they are. */
+  roundCount: z.number().int().min(0),
+  /** Live lines only — a voided line is on the paper trail, not on the bill. */
+  totalMinor: minorSchema,
+});
+export type CheckSummary = z.infer<typeof checkSummarySchema>;
+
+/** A round with its lines, in the order they were sent. */
+export const roundDetailSchema = z.object({
+  id: idSchema,
+  seq: z.number().int().min(1),
+  sentByName: z.string(),
+  sentAt: isoSchema,
+  items: z.array(itemSchema),
+});
+export type RoundDetail = z.infer<typeof roundDetailSchema>;
+
+/**
+ * One check, entire: what every route that changes one answers with.
+ *
+ * Sending a round, voiding a line and taking payment all reply with this rather
+ * than with `{ ok: true }`, and that is what lets the screen apply the result
+ * without a follow-up request — the same principle the realtime payloads are
+ * built on, applied to the response a client already has open.
+ */
+export const checkDetailSchema = z.object({
+  id: idSchema,
+  tableId: idSchema.nullable(),
+  tableName: z.string().nullable(),
+  openedBy: idSchema,
+  openedByName: z.string(),
+  status: checkStatusSchema,
+  openedAt: isoSchema,
+  closedAt: isoSchema.nullable(),
+  rounds: z.array(roundDetailSchema),
+  payments: z.array(paymentSchema),
+  totalMinor: minorSchema,
+});
+export type CheckDetail = z.infer<typeof checkDetailSchema>;
 
 /* ----------------------------------------------------------------- reports */
 

@@ -27,7 +27,7 @@ use crate::realtime::create_pub_sub;
 /// the floor as a whole and the one client that listens wants all six of them,
 /// so splitting by table or by check would multiply the keepalive cost by the
 /// number of subscriptions to deliver exactly the same set of messages.
-const RESTAURANT_CHANNEL: &str = "restaurant";
+pub const RESTAURANT_CHANNEL: &str = "restaurant";
 
 /// The most channels one stream may hold open.
 ///

@@ -27,3 +27,5 @@
 pub mod clock;
 pub mod config;
 pub mod money;
+pub mod ticket;
+pub mod totals;

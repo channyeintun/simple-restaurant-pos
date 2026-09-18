@@ -115,7 +115,21 @@ async fn dispatch(req: &mut Request, env: &Env) -> ApiResult<Response> {
         return answer;
     }
 
-    // 8. `/devices` — the tablet list and the claim links, admin throughout.
+    // 8. `/checks` and `/rounds` — ordering. Sending a round is the one route
+    // in this app where getting it slightly wrong means food cooked twice or
+    // food nobody cooks, and it is a single D1 batch for that reason.
+    if let Some(answer) = routes::checks::route(req, env, &identity).await {
+        return answer;
+    }
+
+    // 9. `/print-jobs` — the queue between the Worker and the printer agent on
+    // the restaurant's LAN, and the cashier's failure banner. Both read the
+    // same list.
+    if let Some(answer) = routes::print_jobs::route(req, env, &identity).await {
+        return answer;
+    }
+
+    // 10. `/devices` — the tablet list and the claim links, admin throughout.
     // It sits after the catalogue rather than beside `/auth/claim` because
     // *minting* a link is an administrative act on a claimed device, while
     // *redeeming* one is how a device gets claimed in the first place; the two
@@ -124,12 +138,12 @@ async fn dispatch(req: &mut Request, env: &Env) -> ApiResult<Response> {
         return answer;
     }
 
-    // 9. `/reports` — the day's takings, and the whole of this app's reporting.
+    // 11. `/reports` — the day's takings, and the whole of this app's reporting.
     if let Some(answer) = routes::reports::route(req, env, &identity).await {
         return answer;
     }
 
-    // 10. Not found. The path, with no query string, so a 404 in a log does not
+    // 12. Not found. The path, with no query string, so a 404 in a log does not
     // carry whatever was in the parameters.
     Err(http::not_found(format!("No route for {path}")))
 }

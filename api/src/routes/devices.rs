@@ -36,21 +36,6 @@ use crate::validate::{self, Str};
 /// The roles that may hand out hardware. One.
 const ADMINS: &[&str] = &["admin"];
 
-/// How long a claim link lasts.
-///
-/// Seven days, the same as `scripts/bootstrap-link.mjs` mints, and the two have
-/// to agree because they are the same thing arriving by different roads — a
-/// link from the console and a link from the backoffice should not behave
-/// differently in the hands of whoever opens it.
-///
-/// Long because of how it is actually used: an admin reads the URL out over the
-/// phone, or sends it in a message, to somebody who will set the tablet up when
-/// they next have a free ten minutes. Short enough that a link forgotten in a
-/// chat thread stops working before the month is out. It is single-use as well
-/// as timed, so the window is what protects a link that was *never* opened,
-/// which is the only kind that lingers.
-const CLAIM_LINK_TTL_MS: f64 = 7.0 * 24.0 * 60.0 * 60.0 * 1000.0;
-
 pub async fn route(
     req: &mut Request,
     env: &Env,
@@ -129,7 +114,15 @@ async fn claim_link(env: &Env, identity: &Identity, id: &str) -> ApiResult<Respo
     middleware::require_role(identity, ADMINS)?;
 
     let nonce = identity::new_claim_nonce();
-    let expires_at = http::iso_of(crate::js::now_ms() + CLAIM_LINK_TTL_MS);
+    // `identity::CLAIM_TTL_MS` — seven days, and taken from there rather than
+    // written out again here. `scripts/bootstrap-link.mjs` mints links with the
+    // same window, and the two have to agree because they are the same thing
+    // arriving by different roads: a link from the console and a link from the
+    // backoffice should not behave differently in the hands of whoever opens
+    // it. It is single-use as well as timed, so the window is really about a
+    // link that was *never* opened — the only kind that lingers in a chat
+    // thread.
+    let expires_at = http::iso_of(crate::js::now_ms() + identity::CLAIM_TTL_MS);
 
     let db_handle = crate::env::db(env)?;
     let row: Option<db::DeviceRow> = db_handle

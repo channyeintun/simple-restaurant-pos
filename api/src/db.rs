@@ -31,6 +31,8 @@ use wasm_bindgen::JsValue;
 use worker::d1::D1Database;
 use worker::Result as WorkerResult;
 
+use pos_core::totals::{self, CheckLine};
+
 /* ------------------------------------------------------------------- rows */
 
 /// One tablet, exactly as `devices` holds it.
@@ -675,6 +677,617 @@ pub struct MethodTotals {
     pub cash: i64,
     pub card: i64,
     pub other: i64,
+}
+
+/* ---------------------------------------------------- checks, rounds, items */
+
+/*
+ * Everything below assembles what a *screen* reads rather than what a table
+ * holds, and two rules run through all of it.
+ *
+ * **No total is computed in SQL.** Not one `SUM(price_minor_snapshot * qty)`
+ * anywhere, however convenient, because that would be a third definition of a
+ * check's total — in a language neither half of the twin is written in and held
+ * to no test case at all. The statements decide *which rows* (`voided_at IS
+ * NULL` on a read that wants live lines); `pos_core::totals` decides what they
+ * come to. Counting rows is a different thing and `COUNT(*)` is used freely:
+ * how many rounds have gone to the kitchen is not money.
+ *
+ * **Names travel with ids.** A cashier's board has no roster to resolve a
+ * `staff_id` against and no floor plan to resolve a `table_id` against, so
+ * every join that saves a client a second request is done here. It is the same
+ * argument the realtime payloads are built on, applied to a response.
+ */
+
+/// One open check, before its lines have been added up.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenCheckRow {
+    pub id: String,
+    pub table_id: Option<String>,
+    pub table_name: Option<String>,
+    pub opened_by_name: String,
+    pub opened_at: String,
+    pub round_count: i64,
+}
+
+/// A live line on some open check, with only the two columns a total needs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenLineRow {
+    pub check_id: String,
+    pub price_minor_snapshot: i64,
+    pub qty: i64,
+}
+
+/// A check's own row, with the two names a screen would otherwise have to
+/// resolve.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CheckHeaderRow {
+    pub id: String,
+    pub table_id: Option<String>,
+    pub table_name: Option<String>,
+    pub opened_by: String,
+    pub opened_by_name: String,
+    pub status: String,
+    pub opened_at: String,
+    pub closed_at: Option<String>,
+}
+
+/// One row of the flattened rounds-and-items read.
+///
+/// The join is `LEFT` on items, so every item column is optional even though a
+/// round always has at least one line — `sendRoundSchema` refuses an empty
+/// order. A round that somehow has none produces one row with `item_id` NULL,
+/// which the mapper skips rather than turning into a line with no name.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoundItemRow {
+    pub round_id: String,
+    pub seq: i64,
+    pub sent_by_name: String,
+    pub sent_at: String,
+    pub item_id: Option<String>,
+    pub product_id: Option<String>,
+    pub name_snapshot: Option<String>,
+    pub price_minor_snapshot: Option<i64>,
+    pub qty: Option<i64>,
+    pub note: Option<String>,
+    pub voided_at: Option<String>,
+    pub voided_by: Option<String>,
+}
+
+/// A payment, exactly as `payments` holds it.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentRow {
+    pub id: String,
+    pub check_id: String,
+    pub method: String,
+    pub amount_minor: i64,
+    pub taken_by: String,
+    pub at: String,
+}
+
+/// What the menu says a product costs *now*, read at send time and copied onto
+/// the item.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProductPriceRow {
+    pub id: String,
+    pub name: String,
+    pub price_minor: i64,
+}
+
+/* --------------------------------------------- mapped values for a screen */
+
+/// `checkSummarySchema`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckSummary {
+    pub id: String,
+    pub table_id: Option<String>,
+    pub table_name: Option<String>,
+    pub opened_by_name: String,
+    pub opened_at: String,
+    pub round_count: i64,
+    pub total_minor: i64,
+}
+
+/// `itemSchema`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Item {
+    pub id: String,
+    pub round_id: String,
+    pub product_id: Option<String>,
+    pub name_snapshot: String,
+    pub price_minor_snapshot: i64,
+    pub qty: i64,
+    pub note: Option<String>,
+    pub voided_at: Option<String>,
+    pub voided_by: Option<String>,
+}
+
+/// `roundDetailSchema`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundDetail {
+    pub id: String,
+    pub seq: i64,
+    pub sent_by_name: String,
+    pub sent_at: String,
+    pub items: Vec<Item>,
+}
+
+/// `checkDetailSchema` — what every route that changes a check answers with.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckDetail {
+    pub id: String,
+    pub table_id: Option<String>,
+    pub table_name: Option<String>,
+    pub opened_by: String,
+    pub opened_by_name: String,
+    pub status: String,
+    pub opened_at: String,
+    pub closed_at: Option<String>,
+    pub rounds: Vec<RoundDetail>,
+    pub payments: Vec<PaymentRow>,
+    pub total_minor: i64,
+}
+
+impl CheckDetail {
+    /// The live lines, as `pos_core::totals` wants them.
+    ///
+    /// Built from the detail rather than from a second read, so that the number
+    /// on the response and the lines on the response cannot disagree: they came
+    /// out of the same rows.
+    pub fn lines(&self) -> Vec<CheckLine> {
+        self.rounds
+            .iter()
+            .flat_map(|round| round.items.iter())
+            .map(|item| CheckLine {
+                price_minor_snapshot: item.price_minor_snapshot,
+                qty: item.qty,
+                voided_at: item.voided_at.clone(),
+            })
+            .collect()
+    }
+}
+
+/* ------------------------------------------------------------------ reads */
+
+/// Every check still open, oldest first, with its total.
+///
+/// Two statements in one `batch`, which is one round trip: the headers, and the
+/// live lines of every open check at once. The alternative — a query per check
+/// to total it — is the N+1 that would turn the cashier's five-second fallback
+/// poll into eleven D1 reads every five seconds.
+///
+/// The lines come back flat and are grouped here. A restaurant has a dozen open
+/// checks at the busiest moment and perhaps eighty live lines between them, so
+/// this is a map of eighty entries built on a screen refresh — nothing worth
+/// pushing into SQL, and pushing the addition into SQL is the thing this file
+/// exists not to do.
+pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>> {
+    let results = db
+        .batch(vec![
+            db.prepare(
+                "SELECT c.id AS id,
+                c.table_id AS table_id,
+                t.name AS table_name,
+                s.name AS opened_by_name,
+                c.opened_at AS opened_at,
+                (SELECT COUNT(*) FROM rounds r WHERE r.check_id = c.id) AS round_count
+        FROM checks c
+        LEFT JOIN \"tables\" t ON t.id = c.table_id
+        JOIN staff s ON s.id = c.opened_by
+        WHERE c.status = 'open'
+        ORDER BY c.opened_at ASC",
+            ),
+            db.prepare(
+                "SELECT r.check_id AS check_id,
+                i.price_minor_snapshot AS price_minor_snapshot,
+                i.qty AS qty
+        FROM items i
+        JOIN rounds r ON r.id = i.round_id
+        JOIN checks c ON c.id = r.check_id
+        WHERE c.status = 'open' AND i.voided_at IS NULL",
+            ),
+        ])
+        .await?;
+
+    let headers: Vec<OpenCheckRow> = results[0].results()?;
+    let lines: Vec<OpenLineRow> = results[1].results()?;
+
+    let mut by_check: std::collections::HashMap<String, Vec<CheckLine>> =
+        std::collections::HashMap::new();
+    for line in lines {
+        by_check
+            .entry(line.check_id)
+            .or_default()
+            // Already filtered to live lines by the statement, so `voided_at` is
+            // None by construction. The type still carries the field, because
+            // `check_total_minor` is the one definition of a total and it is not
+            // going to grow a second entry point that trusts its caller.
+            .push(CheckLine { price_minor_snapshot: line.price_minor_snapshot, qty: line.qty, voided_at: None });
+    }
+
+    Ok(headers
+        .into_iter()
+        .map(|header| {
+            let total = by_check.get(&header.id).map_or(0, |lines| totals::check_total_minor(lines));
+            CheckSummary {
+                id: header.id,
+                table_id: header.table_id,
+                table_name: header.table_name,
+                opened_by_name: header.opened_by_name,
+                opened_at: header.opened_at,
+                round_count: header.round_count,
+                total_minor: total,
+            }
+        })
+        .collect())
+}
+
+/// One check, entire.
+///
+/// Three statements in one `batch`, and therefore one round trip: the header,
+/// the rounds with their lines flattened, and the payments. Every route that
+/// changes a check answers with this, so it runs on the send, the void and the
+/// payment as well as on a plain read — which is why it is one trip rather than
+/// three and why the assembly is here rather than in each of them.
+///
+/// `ORDER BY r.seq ASC, i.rowid ASC` is the order things happened: rounds in
+/// the order they went to the kitchen, and lines within a round in the order
+/// the waiter tapped them into the cart. `rowid` rather than a column of our
+/// own, because SQLite hands one out per row in insert order and adding a
+/// `position INTEGER` would be a column to maintain for something the database
+/// already knows. It is stated here because it is the kind of implicit ordering
+/// somebody removes as untidy.
+pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Option<CheckDetail>> {
+    let results = db
+        .batch(vec![
+            db.prepare(
+                "SELECT c.id AS id,
+                c.table_id AS table_id,
+                t.name AS table_name,
+                c.opened_by AS opened_by,
+                s.name AS opened_by_name,
+                c.status AS status,
+                c.opened_at AS opened_at,
+                c.closed_at AS closed_at
+        FROM checks c
+        LEFT JOIN \"tables\" t ON t.id = c.table_id
+        JOIN staff s ON s.id = c.opened_by
+        WHERE c.id = ?1",
+            )
+            .bind(&[text(check_id)])?,
+            db.prepare(
+                "SELECT r.id AS round_id,
+                r.seq AS seq,
+                s.name AS sent_by_name,
+                r.sent_at AS sent_at,
+                i.id AS item_id,
+                i.product_id AS product_id,
+                i.name_snapshot AS name_snapshot,
+                i.price_minor_snapshot AS price_minor_snapshot,
+                i.qty AS qty,
+                i.note AS note,
+                i.voided_at AS voided_at,
+                i.voided_by AS voided_by
+        FROM rounds r
+        JOIN staff s ON s.id = r.sent_by
+        LEFT JOIN items i ON i.round_id = r.id
+        WHERE r.check_id = ?1
+        ORDER BY r.seq ASC, i.rowid ASC",
+            )
+            .bind(&[text(check_id)])?,
+            db.prepare(
+                "SELECT id, check_id, method, amount_minor, taken_by, at FROM payments
+        WHERE check_id = ?1
+        ORDER BY at ASC",
+            )
+            .bind(&[text(check_id)])?,
+        ])
+        .await?;
+
+    let header: Vec<CheckHeaderRow> = results[0].results()?;
+    let Some(header) = header.into_iter().next() else {
+        return Ok(None);
+    };
+    let flat: Vec<RoundItemRow> = results[1].results()?;
+    let payments: Vec<PaymentRow> = results[2].results()?;
+
+    // Walked in order rather than grouped through a map, because the statement
+    // already returned it in order and a `HashMap` would throw that away and
+    // need it sorted back.
+    let mut rounds: Vec<RoundDetail> = Vec::new();
+    for row in flat {
+        if rounds.last().map(|round| round.id.as_str()) != Some(row.round_id.as_str()) {
+            rounds.push(RoundDetail {
+                id: row.round_id.clone(),
+                seq: row.seq,
+                sent_by_name: row.sent_by_name.clone(),
+                sent_at: row.sent_at.clone(),
+                items: Vec::new(),
+            });
+        }
+        // The `LEFT JOIN`'s empty side. A round with no lines cannot be created
+        // through the API, and a line with no name is not something to render.
+        let (Some(id), Some(name_snapshot), Some(price_minor_snapshot), Some(qty)) =
+            (row.item_id, row.name_snapshot, row.price_minor_snapshot, row.qty)
+        else {
+            continue;
+        };
+        if let Some(round) = rounds.last_mut() {
+            round.items.push(Item {
+                id,
+                round_id: row.round_id,
+                product_id: row.product_id,
+                name_snapshot,
+                price_minor_snapshot,
+                qty,
+                note: row.note,
+                voided_at: row.voided_at,
+                voided_by: row.voided_by,
+            });
+        }
+    }
+
+    let mut detail = CheckDetail {
+        id: header.id,
+        table_id: header.table_id,
+        table_name: header.table_name,
+        opened_by: header.opened_by,
+        opened_by_name: header.opened_by_name,
+        status: header.status,
+        opened_at: header.opened_at,
+        closed_at: header.closed_at,
+        rounds,
+        payments,
+        total_minor: 0,
+    };
+    detail.total_minor = totals::check_total_minor(&detail.lines());
+    Ok(Some(detail))
+}
+
+/// The open check on a table, if there is one.
+///
+/// Two statements rather than one because the second is [`check_detail`]'s
+/// three: this finds the id and that assembles the check. The partial unique
+/// index `idx_checks_open_table` is what makes "the" open check a well-formed
+/// phrase — a table may have at most one, and the database is where that rule
+/// lives.
+pub async fn open_check_for_table(
+    db: &D1Database,
+    table_id: &str,
+) -> WorkerResult<Option<CheckDetail>> {
+    let row: Option<CheckHeaderRow> = db
+        .prepare(
+            "SELECT c.id AS id,
+                c.table_id AS table_id,
+                NULL AS table_name,
+                c.opened_by AS opened_by,
+                '' AS opened_by_name,
+                c.status AS status,
+                c.opened_at AS opened_at,
+                c.closed_at AS closed_at
+        FROM checks c
+        WHERE c.table_id = ?1 AND c.status = 'open'",
+        )
+        .bind(&[text(table_id)])?
+        .first(None)
+        .await?;
+
+    match row {
+        Some(row) => check_detail(db, &row.id).await,
+        None => Ok(None),
+    }
+}
+
+/// The menu rows a send is about, by id, active only.
+///
+/// Read at send time and copied onto each item, which is the one
+/// denormalisation in the schema and the reason the schema is trustworthy: an
+/// admin who renames a dish or puts it up five hundred kyat at seven o'clock
+/// must not rewrite a check that was opened at six.
+///
+/// It is also why the client does **not** send prices. A tablet holding
+/// yesterday's cached menu would otherwise charge yesterday's prices, and the
+/// only copy of a price that matters is the one the Worker read.
+///
+/// `active = 1`, so a retired product cannot be ordered even by a tablet whose
+/// menu has not caught up — the waiter is told which line it was rather than
+/// having the order silently shortened.
+pub async fn products_by_id(
+    db: &D1Database,
+    ids: &[String],
+) -> WorkerResult<Vec<ProductPriceRow>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The placeholder list is built from the *count* of ids and never from the
+    // ids themselves, so nothing a client sent reaches the statement text. The
+    // values go through `bind`, which is the only way a value gets into a query
+    // in this file.
+    let placeholders: Vec<String> = (1..=ids.len()).map(|index| format!("?{index}")).collect();
+    let statement = format!(
+        "SELECT id, name, price_minor FROM products
+        WHERE active = 1 AND id IN ({})",
+        placeholders.join(", ")
+    );
+    let bindings: Vec<JsValue> = ids.iter().map(|id| text(id)).collect();
+    let results = db.prepare(statement).bind(&bindings)?.all().await?;
+    Ok(results.results()?)
+}
+
+/* ------------------------------------------------------------- print jobs */
+
+/// A job with everything around it a ticket needs, except its lines.
+///
+/// The joins are what make the agent's poll one request: the round it belongs
+/// to, who sent that round, the check's table, and — on a void — the line that
+/// was struck off and by whom. Without them the agent would fetch a job and
+/// then three more things to find out what it said.
+///
+/// `item_id`, `voided_at` and `voided_by_name` are NULL on a `ticket` job and
+/// carry the struck line on a `void` one. That asymmetry is the two kinds
+/// sharing a table, and it is cheaper than two tables for a queue that holds
+/// about two hundred rows a day.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrintJobRow {
+    pub id: String,
+    pub round_id: String,
+    pub kind: String,
+    pub status: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub printed_at: Option<String>,
+    pub item_id: Option<String>,
+    pub seq: i64,
+    pub sent_at: String,
+    pub sent_by_name: String,
+    pub table_id: Option<String>,
+    pub table_name: Option<String>,
+    pub voided_at: Option<String>,
+    pub voided_by_name: Option<String>,
+}
+
+/// A line belonging to one of the rounds being printed.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JobItemRow {
+    pub id: String,
+    pub round_id: String,
+    pub name_snapshot: String,
+    pub qty: i64,
+    pub note: Option<String>,
+}
+
+/// Every job in one status, with the lines needed to print all of them.
+///
+/// Two statements in one `batch` — one round trip — and that matters more here
+/// than anywhere else in this file: the agent runs this every three seconds all
+/// day, fourteen thousand times, and `idx_print_jobs_status` makes the
+/// overwhelming majority of them (the ones that answer "nothing") a probe of an
+/// empty index range.
+///
+/// The second statement is deliberately scoped by the same `status` rather than
+/// by a list of round ids gathered from the first: they run in one batch, so
+/// there is no first result to gather from, and re-stating the predicate is
+/// what lets both go out together. When nothing is pending, both return nothing
+/// and the join is never walked.
+///
+/// A ticket's lines are **all** of its round's, including any that have since
+/// been voided. The void notice that follows refers to a slip the kitchen is
+/// holding, and a ticket that quietly omitted the line would be a strike-off
+/// for something they were never told to cook.
+pub async fn print_jobs_with_lines(
+    db: &D1Database,
+    status: &str,
+) -> WorkerResult<(Vec<PrintJobRow>, Vec<JobItemRow>)> {
+    let results = db
+        .batch(vec![
+            db.prepare(
+                "SELECT j.id AS id,
+                j.round_id AS round_id,
+                j.kind AS kind,
+                j.status AS status,
+                j.attempts AS attempts,
+                j.last_error AS last_error,
+                j.created_at AS created_at,
+                j.printed_at AS printed_at,
+                j.item_id AS item_id,
+                r.seq AS seq,
+                r.sent_at AS sent_at,
+                sender.name AS sent_by_name,
+                c.table_id AS table_id,
+                t.name AS table_name,
+                voided.voided_at AS voided_at,
+                voider.name AS voided_by_name
+        FROM print_jobs j
+        JOIN rounds r ON r.id = j.round_id
+        JOIN staff sender ON sender.id = r.sent_by
+        JOIN checks c ON c.id = r.check_id
+        LEFT JOIN \"tables\" t ON t.id = c.table_id
+        LEFT JOIN items voided ON voided.id = j.item_id
+        LEFT JOIN staff voider ON voider.id = voided.voided_by
+        WHERE j.status = ?1
+        ORDER BY j.created_at ASC",
+            )
+            .bind(&[text(status)])?,
+            db.prepare(
+                "SELECT i.id AS id,
+                i.round_id AS round_id,
+                i.name_snapshot AS name_snapshot,
+                i.qty AS qty,
+                i.note AS note
+        FROM items i
+        WHERE i.round_id IN (SELECT round_id FROM print_jobs WHERE status = ?1)
+        ORDER BY i.rowid ASC",
+            )
+            .bind(&[text(status)])?,
+        ])
+        .await?;
+
+    Ok((results[0].results()?, results[1].results()?))
+}
+
+/// One job, after it has been acked, so the response can say what it now is.
+///
+/// The same shape as the list above and the same joins, because the ack answers
+/// with the job — a client that has just told the Worker something should be
+/// told what the Worker now believes rather than `{ ok: true }`.
+pub async fn print_job_with_lines(
+    db: &D1Database,
+    job_id: &str,
+) -> WorkerResult<Option<(PrintJobRow, Vec<JobItemRow>)>> {
+    let results = db
+        .batch(vec![
+            db.prepare(
+                "SELECT j.id AS id,
+                j.round_id AS round_id,
+                j.kind AS kind,
+                j.status AS status,
+                j.attempts AS attempts,
+                j.last_error AS last_error,
+                j.created_at AS created_at,
+                j.printed_at AS printed_at,
+                j.item_id AS item_id,
+                r.seq AS seq,
+                r.sent_at AS sent_at,
+                sender.name AS sent_by_name,
+                c.table_id AS table_id,
+                t.name AS table_name,
+                voided.voided_at AS voided_at,
+                voider.name AS voided_by_name
+        FROM print_jobs j
+        JOIN rounds r ON r.id = j.round_id
+        JOIN staff sender ON sender.id = r.sent_by
+        JOIN checks c ON c.id = r.check_id
+        LEFT JOIN \"tables\" t ON t.id = c.table_id
+        LEFT JOIN items voided ON voided.id = j.item_id
+        LEFT JOIN staff voider ON voider.id = voided.voided_by
+        WHERE j.id = ?1",
+            )
+            .bind(&[text(job_id)])?,
+            db.prepare(
+                "SELECT i.id AS id,
+                i.round_id AS round_id,
+                i.name_snapshot AS name_snapshot,
+                i.qty AS qty,
+                i.note AS note
+        FROM items i
+        WHERE i.round_id = (SELECT round_id FROM print_jobs WHERE id = ?1)
+        ORDER BY i.rowid ASC",
+            )
+            .bind(&[text(job_id)])?,
+        ])
+        .await?;
+
+    let jobs: Vec<PrintJobRow> = results[0].results()?;
+    let Some(job) = jobs.into_iter().next() else {
+        return Ok(None);
+    };
+    Ok(Some((job, results[1].results()?)))
 }
 
 /* ------------------------------------------------------------- primitives */

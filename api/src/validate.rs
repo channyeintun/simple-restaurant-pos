@@ -89,8 +89,6 @@ impl Int {
     pub const MINOR: Self = Self { min: 0, max: 1_000_000_000 };
     /// `itemSchema.qty` — at least one, and no more than a table can eat.
     pub const QTY: Self = Self { min: 1, max: 99 };
-    /// `roundSchema.seq`, and any other counter that starts at one.
-    pub const COUNT: Self = Self { min: 1, max: 1_000_000 };
 }
 
 /* -------------------------------------------------------------------- body */
