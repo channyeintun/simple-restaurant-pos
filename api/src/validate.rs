@@ -7,8 +7,8 @@
 //! that the client's own validation would never have produced, next to a field
 //! whose rules it does not quite share.
 //!
-//! Milestone 0 could hand-roll that for one schema with one field. Milestone 1
-//! has nine bodies across four routers, so the checks live here instead: a
+//! `routes/staff.rs` could hand-roll that for one schema with one field. The
+//! API has a dozen bodies across six routers, so the checks live here: a
 //! [`Body`] wrapping the parsed JSON, and one method per zod primitive, each
 //! producing the string zod 4 produces. Every message in this file was taken
 //! from zod 4.1 running the real schema — they are not reconstructions from the

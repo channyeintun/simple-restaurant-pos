@@ -122,7 +122,7 @@ async fn dispatch(req: &mut Request, env: &Env) -> ApiResult<Response> {
     // in is a normal state, not an error: it is the PIN screen, and the PIN
     // screen has to be able to read `GET /staff` to draw itself. Routes that
     // need a person name that gate themselves, one at a time, which is the
-    // milestone-1 shape and not this one's.
+    // right shape: a gate named where it is needed.
     let identity = middleware::require_device(req, env).await?;
 
     // 6. `/staff` — the PIN screen's list, the two routes that move a person on

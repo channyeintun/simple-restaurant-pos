@@ -20,9 +20,10 @@
 //! order**: each is declared in the order `shared/src/models.ts` declares the
 //! schema it answers, not the order the columns came back in.
 //!
-//! This file is milestone 0's share of the schema — devices and staff, which is
-//! everything the two ways in need. Tables, the catalogue, checks, rounds,
-//! items, payments and print jobs arrive with the milestones that read them.
+//! The file is in the order the app grew into it: devices and staff, which is
+//! everything the two ways in need; then the catalogue and the backoffice's
+//! lists; then checks, rounds, items and payments, which are what a screen
+//! reads rather than what a table holds; then the print queue.
 
 use std::future::Future;
 
@@ -325,7 +326,7 @@ const STAFF_COLUMNS: &str = "id, name, role, active, created_at";
 /// The tablet behind a request, by id.
 ///
 /// It hands back the **row** rather than the mapped [`Device`], because both
-/// callers in this milestone want `token_version` — `/staff/switch` and
+/// callers want `token_version` — `/staff/switch` and
 /// `/staff/signout` re-mint the device token with the staff claim added or
 /// taken away, and a token minted without the current version would be signed
 /// out by its own middleware on the next request. That column is one the mapped

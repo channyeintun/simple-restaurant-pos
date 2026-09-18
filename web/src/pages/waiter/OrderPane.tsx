@@ -450,16 +450,25 @@ export function OrderPane() {
 
             {/*
               One button, and no confirmation on it — the brief says so in as
-              many words. It keeps its label while the request is in flight
-              rather than swapping to "Sending…" only when there is nothing to
-              lose by it: the disabled state is the feedback, and the label is
-              what somebody is still reading as they let go.
+              many words.
+
+              It says **Try again** while a send is unconfirmed, because that is
+              what pressing it does: the key on the draft is unchanged, so the
+              Worker recognises the repeat and answers with the round it already
+              has. Leaving it reading "Send to kitchen" under a banner that says
+              to try again would make the two disagree about whether this is a
+              second order, which is the one thing the person pressing it needs
+              to be sure about.
             */}
             <Button
               disabled={draft().lines.length === 0 || busy()}
               onClick={() => void send()}
             >
-              {busy() ? m().waiter.sending : m().waiter.send}
+              {busy()
+                ? m().waiter.sending
+                : unconfirmed()
+                  ? m().app.retry
+                  : m().waiter.send}
             </Button>
           </div>
         </div>

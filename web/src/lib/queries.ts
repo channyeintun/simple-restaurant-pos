@@ -23,8 +23,8 @@ import { listStaff } from '../api/staff.js';
  * thrown and nothing logged. It reads as a caching bug and it is a syntax one.
  *
  * The arrow is also what lets `enabled`, `staleTime` and the rest be computed
- * from signals, because it is re-run inside a reactive scope. Every milestone
- * after this one adds reads here; copy the shape of the two below.
+ * from signals, because it is re-run inside a reactive scope. Every read in
+ * this file is written that way; copy the shape when adding one.
  *
  * ## Where this sits
  *
@@ -174,7 +174,7 @@ export function useMe() {
  * cached for five minutes rather than refetched each time the screen opens —
  * and that screen opens at the start of every shift and after every sign-out,
  * with a person standing in front of it. The backoffice's staff editor, when
- * milestone 1 brings it, invalidates {@link queryKeys.staff}.
+ * invalidates {@link queryKeys.staff} whenever it changes the roster.
  *
  * `enabled` is deliberately absent. Reaching this screen at all means the
  * device token is in hand; if it is not, the 401 that comes back is how the

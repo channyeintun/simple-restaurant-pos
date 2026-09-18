@@ -53,7 +53,7 @@ import { platform } from '../platform/index.js';
  * outside anything a page mounts, and an untranslated gate is a worse outcome
  * than a slightly unusual module. `useLocale()` therefore answers correctly
  * with or without a provider above it — the context is kept so that the shell
- * can adopt one in a single line, and so that a later milestone can scope a
+ * can adopt one in a single line, and so that a future screen could scope a
  * language to part of the tree without every caller changing.
  */
 
@@ -112,7 +112,7 @@ const sharedValue: LocaleValue = {
 const LocaleContext = createContext<LocaleValue>();
 
 /**
- * Optional, and not mounted by anything in milestone 0 — see the module note.
+ * Optional, and not mounted by anything — see the module note.
  * Wrapping the shell in it is what moves the document-language effect into the
  * app's lifetime, which is where it belongs once there is a shell to hang it
  * off.

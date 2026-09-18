@@ -272,9 +272,9 @@ export function ChipSet(props: { children: JSX.Element; ariaLabel?: string }) {
  * `selected` decides which element gets drawn, and the distinction is the
  * accessible one rather than a style: a filter chip reports a pressed state to
  * assistive technology and an assist chip reports a plain button. The waiter's
- * category row in milestone 2 is a filter — one of several, and which one is on
- * matters — so it passes `selected`. Anything that just does something when
- * pressed leaves it off.
+ * category row is a filter — one of several, and which one is on matters — so
+ * it passes `selected`. Anything that just does something when pressed leaves
+ * it off.
  */
 export function Chip(props: {
   label: string;
@@ -374,11 +374,12 @@ export function Dialog(props: DialogProps) {
  *
  * `CLAUDE.md` names exactly two actions in this app that get a confirmation —
  * clearing a cart and voiding an item that has already gone to the kitchen —
- * and both of them are milestone 2. This exists now rather than then because
- * the hazard is inconsistency rather than any one dialog: a screen where one
- * control asks and the control next to it does not is a screen where nobody can
- * learn which taps are safe to try. Every destructive action in this app goes
- * through this component, and nothing else in it gets a confirmation at all —
+ * and retiring a catalogue row has since earned a third, for the same reason.
+ * They share a component because the hazard is inconsistency rather than any
+ * one dialog: a screen where one control asks and the control next to it does
+ * not is a screen where nobody can learn which taps are safe to try. Every
+ * destructive action in this app goes through here, and nothing else in it gets
+ * a confirmation at all —
  * sending a round to the kitchen does not, by explicit instruction, because a
  * waiter standing at a table taps Send thirty times a service.
  *

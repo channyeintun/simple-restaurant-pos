@@ -54,8 +54,13 @@ jobs:
       - name: Typecheck and check the Worker
         run: npm run check
 
-      - name: Shared logic and i18n tests
-        run: npm run test:shared
+      # All four suites, not just the shared one: the twin rules on both sides,
+      # the cashier's event reducer, and the ESC/POS bytes. None of them needs a
+      # server, a socket or a Redis. It re-runs the Rust tests that `check` just
+      # ran, which is a few seconds against a warm cache and worth it for a
+      # single command that means "everything that can be tested, was".
+      - name: Pure-logic tests
+        run: npm test
 
       - name: Build the frontend
         run: npm run build

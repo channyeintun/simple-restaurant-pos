@@ -5,11 +5,13 @@
  * whole point. Entries that take values are functions so the compiler checks
  * the arguments too.
  *
- * This is milestone 0's catalogue and it is deliberately small: the claim
- * screen, the PIN screen, and the states those two can fail into. It grows one
- * milestone at a time, alongside the screens that need it. Writing the waiter's
- * strings now would mean translating a screen nobody has designed, which is how
- * a catalogue fills up with keys that no longer match what is on the button.
+ * A key is added when a screen needs it and not before. Writing strings for a
+ * screen nobody has designed is how a catalogue fills up with keys that no
+ * longer match what is on the button — and every one of them has to be
+ * translated and kept in step in the meantime.
+ *
+ * What is *not* here is the five words a kitchen ticket carries. They live in
+ * `agent/src/index.ts`; the note at the top of `./index.ts` says why.
  */
 export const en = {
   app: {

@@ -57,7 +57,7 @@ export interface LiveHandlers {
  * Returns the connection state as an accessor, for an indicator to read.
  *
  * `enabled` is a plain boolean, read once when the screen mounts, not a signal
- * or a getter. Milestone 0 has one caller and it wants a stream for as long as
+ * or a getter. There is one caller and it wants a stream for as long as
  * it is on screen; a reactive flag would mean a `createEffect` here and a
  * connection that opens and closes as the flag moves, which is a cost model
  * nobody has asked for yet. Making it reactive later is a local change to this

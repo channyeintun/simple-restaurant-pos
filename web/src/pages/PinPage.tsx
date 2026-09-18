@@ -353,7 +353,7 @@ export function PinPage() {
         language is a property of the device — see `state/locale.tsx` — and this
         is the screen every one of those people passes through anyway. Putting
         it here means nobody has to find a settings screen mid-service, and
-        there is no settings screen to find until milestone 1.
+        the backoffice is a manager's screen and this is everybody's.
 
         Each option is written in its own script and carries its own `lang`, so
         the Burmese one gets a Myanmar face and the line height that script

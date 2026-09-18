@@ -1,7 +1,7 @@
 import type { CheckSummary, Table } from '@pos/shared';
 import { useNavigate } from '@solidjs/router';
 import { For, Show, createMemo } from 'solid-js';
-import { Spinner } from '../../components/ui.js';
+import { Button, ErrorBanner, Spinner } from '../../components/ui.js';
 import { useOpenChecks, useTables } from '../../lib/queries.js';
 import { useApp } from '../../state/app.js';
 import { hasDraft, slotKey } from '../../state/cart.js';
@@ -75,6 +75,34 @@ export function TablesPane(props: { current: string | null }) {
       }}
     >
       <h2 style={{ margin: '0', 'font-size': '1.1rem' }}>{m().waiter.tables}</h2>
+
+      {/*
+        A floor that could not be loaded is not an empty floor.
+
+        Without this the grid renders from `?? []` and a waiter whose tablet has
+        lost the kitchen wifi sees every table gone — which reads as "the
+        restaurant is empty" rather than "this tablet cannot see anything". The
+        brief asks for a banner with a Retry on connection loss, and this is the
+        screen it matters on: the draft carts are safe in the tablet's own
+        storage either way, and what the person needs to know is that what they
+        are looking at is not the truth.
+      */}
+      <Show when={tables.isError || checks.isError}>
+        <ErrorBanner>
+          <div class="section-head">
+            <span>{m().errors.offline}</span>
+            <Button
+              variant="outlined"
+              onClick={() => {
+                void tables.refetch();
+                void checks.refetch();
+              }}
+            >
+              {m().app.retry}
+            </Button>
+          </div>
+        </ErrorBanner>
+      </Show>
 
       <Show when={!tables.isPending} fallback={<Spinner />}>
         <div class="grid" style={{ '--pos-grid-min': '7.5rem' }}>

@@ -2,15 +2,14 @@ import type { StaffRole } from '@pos/shared';
 import { Navigate, type RouteDefinition } from '@solidjs/router';
 import { useMe } from './lib/queries.js';
 /*
- * The contract with `pages/`, which another agent owns. Milestone 0's pages are
- * shells; the routes below are what they hang off, and the names are the file
- * names:
+ * The contract with `pages/`: the routes below are what each page hangs off,
+ * and the names are the file names:
  *
  *   ClaimPage       pages/ClaimPage.tsx       redeems a device link
  *   PinPage         pages/PinPage.tsx         the four-digit staff switch
- *   WaiterPage      pages/WaiterPage.tsx      tables + cart      (milestone 2)
- *   CashierPage     pages/CashierPage.tsx     open checks        (milestone 3)
- *   BackofficePage  pages/BackofficePage.tsx  the six lists      (milestone 1)
+ *   WaiterPage      pages/WaiterPage.tsx      tables + cart, with the order pane nested
+ *   CashierPage     pages/CashierPage.tsx     the board and one check, with the stream above both
+ *   BackofficePage  pages/BackofficePage.tsx  the six lists behind a tab bar
  */
 import { BackofficePage } from './pages/BackofficePage.js';
 import { CashierPage } from './pages/CashierPage.js';

@@ -157,7 +157,7 @@ export function App(props: RouteSectionProps) {
   /*
    * The splash comes down the moment there is a real screen behind it.
    *
-   * Every milestone-0 screen is its own content as soon as it commits — the
+   * Every screen the shell itself draws is its own content as soon as it commits — the
    * gate, the claim flow, the PIN pad — so "the bootstrap has answered" is the
    * right moment for all of them, and there is no screen here that opens on a
    * spinner of its own and would hand the splash straight over to it. When one

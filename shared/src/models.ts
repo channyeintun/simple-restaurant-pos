@@ -17,12 +17,10 @@ import { appConfigSchema } from './config.js';
  *   * **Money is an integer in minor units**, always, on every field whose name
  *     ends in `Minor`. See `money.ts`.
  *
- * It grows a milestone at a time. Milestone 0 needs the auth payloads and the
- * staff list; milestone 1 needs the catalogue's create and update bodies. The
- * ten domain models are all here because they are the shape of the database and
- * a reader should be able to see the whole thing in one file, but a request
- * payload arrives with the route that parses it — an unused schema is a guess
- * about a route nobody has written yet, and it will be wrong.
+ * The ten domain models are all here because they are the shape of the database
+ * and a reader should be able to see the whole thing in one file. A request
+ * payload, by contrast, arrives with the route that parses it: an unused schema
+ * is a guess about a route nobody has written yet, and it will be wrong.
  */
 
 export const idSchema = z.string().min(1).max(64);

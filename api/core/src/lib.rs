@@ -16,7 +16,7 @@
 //! Only rules live here, not plumbing. Routes, D1, tokens and the realtime seam
 //! are `api/src/`'s; anything in this crate is something a person could be shown
 //! on paper and asked whether it is right. Totals and the kitchen ticket join
-//! money and the clock as the milestones that need them land.
+//! money and the clock: `totals.rs` and `ticket.rs`.
 //!
 //! Nothing in this crate may depend on `worker`, `wasm-bindgen` or the host, so
 //! that `cargo test` runs it natively — on the machine, in under a second, with

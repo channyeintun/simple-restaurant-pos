@@ -58,15 +58,14 @@ import { pathToFileURL } from 'node:url';
  * agent backs off exponentially, so a dead printer is asked politely rather
  * than sixty times a minute.
  *
- * ## Milestone 0: what is here and what is not
+ * ## What is in this file
  *
- * This file is the skeleton — the config, the loop, the intervals and the
- * reasoning. The printing itself is milestone 4 and is marked as a gap below:
- * it exits with a message instead of pretending to work, and `main` stops
- * before starting the loop for the same reason. An agent that polled, failed
- * every ticket it was handed and burned each one through three attempts would
- * be strictly worse than no agent at all — it would fill the cashier's banner
- * with "not implemented" and leave real orders marked `failed` in the database.
+ * All of it: the config, the loop, the intervals, the ESC/POS and the socket.
+ * It is one file because it is one job, and because the thing running in a
+ * restaurant should be something somebody can open and read from top to bottom
+ * when it misbehaves — which is also why there is no build step and no runtime
+ * dependency. `renderEscPos` is exported for `test/ticket.test.ts`; nothing
+ * else here is imported by anything.
  *
  * Running it needs node 22.6 or newer, because `npm start` strips the types and
  * runs this file directly. There is no build step on purpose: the thing that
@@ -232,14 +231,14 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
  *
  * Deliberately not imported from `@pos/shared`: this workspace has no runtime
  * dependencies at all, and pulling the shared package in would pull zod onto a
- * machine in a restaurant to validate four fields. The fewer moving parts
+ * machine in a restaurant to validate five fields. The fewer moving parts
  * between the kitchen and a printed ticket, the better — and this file only
  * reads the fields below.
  *
- * What a ticket *says* is not here either. That is `shared/src/ticket.ts` and
- * its Rust twin, and milestone 2 decides whether this payload carries it or the
- * agent asks for the round separately; either way the agent renders what it is
- * given and does not compose a ticket out of its own opinions.
+ * What a ticket *says* is not worked out here either. It arrives already
+ * rendered, in `ticket`, from `pos_core::ticket` — whose TypeScript twin is
+ * `shared/src/ticket.ts` and which is held to the same test cases. The agent
+ * draws what it is given and composes nothing out of its own opinions.
  */
 export interface PendingJob {
   id: string;
