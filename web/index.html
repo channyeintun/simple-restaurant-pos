@@ -46,10 +46,26 @@
          matches it. -->
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="POS" />
-    <!-- Inline so the app never makes a network request for a 16px icon. -->
+    <!--
+      Inline so the app never makes a network request for a 16px icon.
+
+      The same receipt as `scripts/icon.svg`, redrawn rather than scaled,
+      because a tab favicon is rendered at 16px and the rules that hold at 512
+      stop holding there. Three ruled lines become two — at 16px the third
+      closes the gaps and the paper turns into a grey smudge — and the ink is
+      proportionally heavier (5% of the width against the icon's 3.5%) for the
+      same reason. The rounded corners go too: half a pixel of radius is not a
+      corner, it is a slightly dirty one.
+
+      It keeps the field, though, unlike the outline this used to be. A tab
+      strip is light, a Chrome tab gives an icon 16 physical pixels, and a
+      two-hairline outline at that size is a grey mote; the blue tile is what
+      makes the tab findable in a row of twelve, and it is also what the
+      installed app looks like on the home screen.
+    -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300458f' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h12v18l-3-2-3 2-3-2-3 2Z'/%3E%3Cpath d='M9 8h6M9 12h6M9 16h3'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2300458f'/%3E%3Cpath d='M9 6.5h14v19l-2.33-2-2.34 2-2.33-2-2.33 2-2.34-2-2.33 2Z' fill='%23f7f8fb'/%3E%3Cg stroke='%2300458f' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M12 13h8'/%3E%3Cpath d='M12 18h5'/%3E%3C/g%3E%3C/svg%3E"
     />
     <title>Restaurant POS</title>
 
@@ -177,8 +193,20 @@
         stroke-linecap="round"
         stroke-linejoin="round"
       >
-        <!-- A receipt with a torn foot: the one object everybody in the
-             building already reads as "the till". -->
+        <!--
+          A receipt with a torn foot: the one object everybody in the building
+          already reads as "the till", and the same drawing as the app icon —
+          `scripts/icon.svg`, which carries the reasoning for the whole family
+          and is the file to change first.
+
+          Stroked rather than filled, which is the one difference. At this size
+          the icon's solid paper on a solid field would land like a dialog
+          opening; an outline on the app's own background is the quiet thing a
+          boot screen should be. `stroke-linejoin="round"` rounds the outside of
+          each corner by half the stroke width, which is where the icon's
+          10-unit corner arcs come from — that is the two of them agreeing, not
+          a coincidence.
+        -->
         <path d="M26 16h44v62l-7.33-6-7.33 6-7.34-6-7.33 6-7.33-6-7.34 6Z" />
         <path d="M37 36h22M37 48h22M37 60h14" />
       </svg>

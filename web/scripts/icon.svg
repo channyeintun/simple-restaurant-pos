@@ -1,29 +1,92 @@
 <!--
-  Source art for the PWA icons. Full-bleed background with the ball inside the
-  central 80%, so the same image works as a `maskable` icon on Android without
-  the corners of the ball being cropped by a circular mask.
+  Source art for the app icon, and the drawing the whole mark family is cut
+  from: this file renders to the PWA PNGs, `index.html` carries a 16px-tuned
+  copy of it as the favicon and an outlined copy on the boot splash, and
+  `web/src/components/Logo.tsx` draws it inside the app.
 
-  Regenerate the PNGs with: npm run icons -w @futsal/web
+  Regenerate the PNGs with: npm run icons -w @pos/web
+
+  ## Why a receipt
+
+  The mark is a receipt with a torn foot, which is the one object everybody in
+  the building — waiter, cashier, kitchen, the owner counting up at midnight —
+  already reads as "the till", in any language. That last part is the whole
+  argument. This app ships in English and Burmese and is installed on a tablet
+  whose home screen may be in either, so a lettermark would be legible to half
+  the staff and a wordmark would have to be drawn twice; a torn slip of paper
+  is read by everybody and translated by nobody. It also has an unusually good
+  silhouette for an icon: tall, narrow and asymmetric at the bottom, so it is
+  still identifiable on a home screen at 48px next to two dozen rounded squares.
+
+  ## Why it is filled here and stroked on the splash
+
+  The same shape, drawn twice on purpose.
+
+  Down at 32px — the tab icon, and the smallest PNG this file produces — an
+  outline is two hairlines with a gap between them, and the gap closes first.
+  A filled silhouette keeps its shape all the way down, which is why the app
+  icon is paper-on-blue rather than blue-on-paper.
+
+  The splash has the opposite problem and takes the opposite answer: it draws
+  the mark at roughly 100px on the app's own background, where a solid blue
+  slab would land like a dialog appearing, and an outline reads as the quiet
+  thing a boot screen should be.
+
+  Between the two, the corners are what give it away, so they are matched by
+  hand. The splash mark is stroked with `stroke-linejoin="round"`, which rounds
+  the outside of each corner by half the stroke width — 2 units on its 96 grid,
+  which is 10 units here. Hence the 10-unit arcs on the two top corners below:
+  without them the filled version would have sharper shoulders than the
+  outlined one and the family would not quite look like one family.
+
+  ## Geometry
+
+  The receipt is 200x282 centred on 256,256 — the same 44:62 proportion the
+  splash and favicon use, so all three are the same object at three scales.
+
+  Its far corner is sqrt(100^2 + 141^2) = 173 from the centre, inside the 205
+  that a circular Android mask leaves of a 512 icon, so this one file serves
+  both the `any` and the `maskable` purposes in the manifest and there is no
+  second piece of artwork to keep in step with this one.
+
+  Three colours and no more: the field, the paper, and ink that is *exactly*
+  the field colour rather than a darker blue, so the ruled lines read as holes
+  punched through one object instead of a second thing sitting on top of it.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" fill="#386a20" />
+  <!-- Full bleed. The platform does the rounding: Android masks it to whatever
+       shape the launcher uses, iOS to its own squircle, and a corner radius
+       baked in here would show up as a light gap inside theirs. The in-app
+       badge is the one copy that has to round itself — see `Logo.tsx`. -->
+  <rect width="512" height="512" fill="#00458f" />
 
-  <!-- Ball, centred and kept within the 80% maskable safe zone (r <= 205). -->
-  <g transform="translate(256 256)">
-    <circle r="150" fill="#f4fbef" />
+  <!--
+    The paper. `surface-container-low` from the scheme rather than pure white:
+    on a home screen full of icons competing on brightness, a hair off white is
+    the difference between a mark and a flashlight, and it is a colour the app
+    already draws with.
 
-    <!-- Central pentagon -->
-    <path
-      d="M0 -74 L70 -23 L43 60 L-43 60 L-70 -23 Z"
-      fill="#1a3700" />
+    The foot is three teeth over six 33.33-unit steps, corners down, which is
+    what a slip torn off a spool actually looks like: the ends of the row have
+    to be low, or the foot reads as a row of pennants rather than as a tear.
+  -->
+  <path
+    d="M166 115 H346 a10 10 0 0 1 10 10 V397
+       l-33.33 -26 l-33.34 26 l-33.33 -26 l-33.33 26 l-33.34 -26 l-33.33 26
+       V125 a10 10 0 0 1 10 -10 Z"
+    fill="#f7f8fb" />
 
-    <!-- Seams running out to the edge from each pentagon vertex -->
-    <g stroke="#1a3700" stroke-width="15" stroke-linecap="round" fill="none">
-      <path d="M0 -74 L0 -150" />
-      <path d="M70 -23 L142 -46" />
-      <path d="M43 60 L88 121" />
-      <path d="M-43 60 L-88 121" />
-      <path d="M-70 -23 L-142 -46" />
-    </g>
+  <!--
+    Two lines of items and a short one for the total — the shape of every bill
+    anybody has ever been handed, and the reason this is a bill rather than a
+    blank label.
+
+    Round caps, because the line ends are the first thing to go crunchy when
+    Chrome renders this at 32px.
+  -->
+  <g stroke="#00458f" stroke-width="18" stroke-linecap="round">
+    <path d="M206 206 H306" />
+    <path d="M206 260 H306" />
+    <path d="M206 315 H270" />
   </g>
 </svg>

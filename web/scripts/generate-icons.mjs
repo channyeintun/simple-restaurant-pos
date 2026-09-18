@@ -1,7 +1,7 @@
 /**
  * Render scripts/icon.svg to the PNG sizes a PWA needs.
  *
- *   npm run icons -w @futsal/web
+ *   npm run icons -w @pos/web
  *
  * Uses headless Chrome over the DevTools Protocol rather than adding an image
  * library to the dependency tree — the PNGs are committed, so this only needs
@@ -24,7 +24,7 @@ mkdirSync(OUT, { recursive: true });
 const svg = readFileSync(join(here, 'icon.svg'), 'utf8');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const profile = mkdtempSync(join(tmpdir(), 'ff-icons-'));
+const profile = mkdtempSync(join(tmpdir(), 'pos-icons-'));
 const chrome = spawn(CHROME, [
   '--headless=new', '--remote-debugging-port=9350', `--user-data-dir=${profile}`,
   '--no-first-run', '--disable-gpu', '--hide-scrollbars', 'about:blank',

@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "deploy": "npm run build && wrangler pages deploy dist --project-name restaurant-pos",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name pannuyaung",
     "icons": "node scripts/generate-icons.mjs"
   },
   "dependencies": {

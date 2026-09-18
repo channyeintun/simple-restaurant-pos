@@ -2,6 +2,7 @@ import { useNavigate } from '@solidjs/router';
 import { Match, Show, Switch, createEffect, createSignal, onCleanup } from 'solid-js';
 import { claimDevice } from '../api/auth.js';
 import { ApiError } from '../api/client.js';
+import { Logo } from '../components/Logo.js';
 import { Button, ErrorBanner, Spinner } from '../components/ui.js';
 import { platform } from '../platform/index.js';
 import { useApp } from '../state/app.js';
@@ -151,6 +152,11 @@ export function ClaimPage() {
 
   return (
     <main class="screen">
+      {/* Same pairing as the shell's gate, and deliberately so: this is the
+          screen that replaces it the moment a link is opened, and a mark that
+          stayed put across the swap is what makes the two read as one app
+          rather than two error pages. */}
+      <Logo />
       <p class="screen-eyebrow">{m().claim.tagline}</p>
       <h1 class="screen-title">{m().app.name}</h1>
 

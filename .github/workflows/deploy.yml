@@ -26,7 +26,7 @@ env:
   # bootstrap. A build-time copy of those is a second source of truth baked into
   # a PWA that is already installed on a tablet, and the day it disagrees with
   # the Worker the screen is quoting a price the bill does not charge.
-  VITE_API_URL: ${{ vars.VITE_API_URL || 'https://restaurant-pos-api.chanyeintun.workers.dev' }}
+  VITE_API_URL: ${{ vars.VITE_API_URL || 'https://restaurant-pos-api.pannuyaung.workers.dev' }}
 
 jobs:
   check:

@@ -321,6 +321,23 @@ textarea,
   max-width: 34rem;
 }
 
+/*
+ * The app's mark, above the app's name, on the two screens that introduce it.
+ *
+ * This block has to stay *after* `.screen > *`. That rule gives every child of
+ * a screen the full column width, an `<svg>` included, and the two selectors
+ * have the same specificity — so the one that wins is whichever is written
+ * second. Moved above it, the claim screen grows a 34rem blue square.
+ *
+ * Sized in `rem` rather than `px` so it tracks the 17px base along with the
+ * title underneath it; a hair under the 2rem title's cap height times three,
+ * which is about where a mark stops being a header and starts being a poster.
+ */
+.app-logo {
+  width: 5rem;
+  height: 5rem;
+}
+
 .screen-eyebrow {
   margin: 0;
   font-size: 0.9rem;

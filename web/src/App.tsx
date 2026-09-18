@@ -5,6 +5,7 @@ import { Match, Show, Switch, createEffect, createSignal, onCleanup, onMount } f
 import { ApiError, getToken, onUnauthorized } from './api/client.js';
 import { queryKeys, useMe } from './lib/queries.js';
 import { LanguageToggle } from './components/LanguageToggle.js';
+import { Logo } from './components/Logo.js';
 import { platform } from './platform/index.js';
 import { useLocale } from './state/locale.js';
 
@@ -255,6 +256,10 @@ function Booting(props: { m: Messages; visible: boolean }) {
 function NotAStaffDevice(props: { m: Messages }) {
   return (
     <main class="screen">
+      {/* The mark, because this is the screen a tablet spends its whole life on
+          until somebody claims it, and the only thing on it that says which app
+          is waiting. */}
+      <Logo />
       <p class="screen-eyebrow">{props.m.claim.tagline}</p>
       <h1 class="screen-title">{props.m.app.name}</h1>
       <p class="screen-body">{props.m.claim.noLink}</p>
