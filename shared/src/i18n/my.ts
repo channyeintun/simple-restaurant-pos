@@ -115,6 +115,7 @@ export const my: Messages = {
       today: 'ယနေ့',
     },
     add: 'ထည့်မည်',
+    all: 'အားလုံး',
     edit: 'ပြင်မည်',
     save: 'သိမ်းမည်',
     saving: 'သိမ်းနေသည်…',

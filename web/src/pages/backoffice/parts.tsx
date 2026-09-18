@@ -1,4 +1,4 @@
-import { type JSX, Show, createSignal } from 'solid-js';
+import { type JSX, Show, createSignal, onCleanup } from 'solid-js';
 import { ApiError } from '../../api/client.js';
 import { Button, Dialog, ErrorBanner, Spinner } from '../../components/ui.js';
 import { useLocale } from '../../state/locale.js';
@@ -183,9 +183,25 @@ export function Empty() {
  * who caused it. It sits above the fields rather than below the buttons so it
  * is read before the next attempt rather than after it.
  *
- * `onSubmit` fires from the button and from `Enter` in the form, which is the
- * one keyboard affordance this screen genuinely needs: the backoffice is the
- * only place in the app somebody is typing rather than tapping.
+ * `onSubmit` fires from the button and from `Enter`, which is the one keyboard
+ * affordance this screen genuinely needs: the backoffice is the only place in
+ * the app somebody is typing rather than tapping.
+ *
+ * `Enter` is a **capture-phase** `keydown` listener, and every word of that is
+ * the result of watching it not work.
+ *
+ * A `<form onSubmit>` never fires: a Material text field keeps its real
+ * `<input>` inside a shadow root, where it is not associated with any form in
+ * this document. A bubble-phase listener does not work either, because
+ * `md-dialog` has a form of its own and treats `Enter` as an implicit
+ * submission of it — so the dialog closes, discarding what was typed, before
+ * anything of ours is reached. Capture runs from the window down to the target,
+ * so a listener here sees the key first and `preventDefault` stops the dialog
+ * taking it.
+ *
+ * Registered with `addEventListener` rather than a JSX prop because Solid
+ * spells the capture phase with an `oncapture:` namespace that has no types for
+ * `keydown`, and a cast to get at it would hide what this is doing.
  */
 export function FormDialog(props: {
   open: boolean;
@@ -215,23 +231,33 @@ export function FormDialog(props: {
         </>
       }
     >
-      <form
-        class="form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!props.busy) props.onSubmit();
-        }}
-      >
+      <div class="form" ref={(element) => captureEnter(element, props)}>
         <Show when={props.error}>{(message) => <ErrorBanner>{message()}</ErrorBanner>}</Show>
         {props.children}
-        {/*
-          A submit button the form needs and nobody should see: without one,
-          `Enter` in a single-field form does nothing in most browsers, and the
-          dialog's own affirmative button is outside the form element and so
-          cannot be it.
-        */}
-        <button type="submit" class="sr-only" tabindex={-1} aria-hidden="true" />
-      </form>
+      </div>
     </Dialog>
   );
+}
+
+/**
+ * Make `Enter` submit, and stop `md-dialog` taking it first.
+ *
+ * Split out of {@link FormDialog} only because a `ref` callback with a
+ * lifecycle in it reads badly inline. `onCleanup` runs when the dialog's owner
+ * is disposed, which is the component, not each open — the element is created
+ * once and the listener goes with it.
+ */
+function captureEnter(element: HTMLElement, props: { busy: boolean; onSubmit(): void }): void {
+  const handler = (event: KeyboardEvent) => {
+    if (event.key !== 'Enter' || props.busy) return;
+    // A textarea is the one field where `Enter` means a new line. There is none
+    // in the backoffice today; the check is here so that adding one is not a
+    // silent change to what this dialog does.
+    const target = event.target as HTMLElement | null;
+    if (target?.tagName === 'TEXTAREA') return;
+    event.preventDefault();
+    props.onSubmit();
+  };
+  element.addEventListener('keydown', handler, true);
+  onCleanup(() => element.removeEventListener('keydown', handler, true));
 }

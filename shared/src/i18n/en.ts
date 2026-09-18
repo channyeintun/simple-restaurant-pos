@@ -132,6 +132,8 @@ export const en = {
       today: 'Today',
     },
     add: 'Add',
+    /** The chip that clears the category filter. */
+    all: 'All',
     edit: 'Edit',
     save: 'Save',
     saving: 'Saving…',

@@ -397,7 +397,7 @@ export function ProductsPanel() {
       <Show when={(categories.data?.length ?? 0) > 0}>
         <ChipSet ariaLabel={m().backoffice.fields.category}>
           <Chip
-            label={m().backoffice.sections.products}
+            label={m().backoffice.all}
             selected={filter() === null}
             onClick={() => setFilter(null)}
           />
