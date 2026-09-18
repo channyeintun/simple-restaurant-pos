@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Restaurant POS REST API — Rust on Cloudflare Workers, D1 + Upstash.",
+  "description": "Restaurant POS REST API \u2014 Rust on Cloudflare Workers, D1 + Upstash.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -12,7 +12,8 @@
     "db:migrate:remote": "wrangler d1 migrations apply restaurant-pos --remote",
     "db:seed:local": "wrangler d1 execute restaurant-pos --local --file=./seed.sql",
     "test": "cargo test -p pos-core && cargo test -p pos-api",
-    "claim:bootstrap": "node scripts/bootstrap-link.mjs"
+    "claim:bootstrap": "node scripts/bootstrap-link.mjs",
+    "pin:set": "node scripts/set-pin.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.40.0"
