@@ -16,7 +16,8 @@ import { BackofficePage } from './pages/BackofficePage.js';
 import { CashierPage } from './pages/CashierPage.js';
 import { ClaimPage } from './pages/ClaimPage.js';
 import { PinPage } from './pages/PinPage.js';
-import { WaiterPage } from './pages/WaiterPage.js';
+import { PickTable, WaiterPage } from './pages/WaiterPage.js';
+import { OrderPane } from './pages/waiter/OrderPane.js';
 
 /**
  * Every address in the app.
@@ -101,13 +102,38 @@ export const routes: RouteDefinition[] = [
   /*
    * The three trees.
    *
-   * Each is written as its own path plus a splat, so that `/waiter` and
-   * `/waiter/table/tbl_7` both land on the same page today. Milestone 2 turns
-   * the splat into named children under the same parent — a nested route
-   * renders inside the page rather than replacing it, which is what keeps the
-   * tables pane on screen while the right-hand pane changes tables.
+   * The waiter's is nested and the other two are not, and the difference is
+   * what each screen does when you move within it. A nested route renders
+   * *inside* its parent, so `/waiter/table/tbl_7` replaces only the right-hand
+   * pane and leaves the tables grid exactly where it was — same scroll
+   * position, no refetch, no flicker. That is what makes the grid usable as
+   * navigation rather than as a screen you pass through, and it is the reason
+   * the waiter's page is a layout with children rather than one component
+   * reading the path.
+   *
+   * The cashier and the backoffice have nothing that stays put: opening a check
+   * replaces the board, and a backoffice tab replaces the panel. They keep the
+   * splat, which costs nothing and means neither grows a route table for
+   * navigation it does not have.
    */
-  { path: ['/waiter', '/waiter/*'], component: WaiterPage },
+  {
+    path: '/waiter',
+    component: WaiterPage,
+    children: [
+      { path: '/', component: PickTable },
+      /*
+       * Three ways into the same pane, and they are three paths rather than one
+       * with a mode parameter because the parameter *is* the mode: `tableId`
+       * means find-or-open this table's check, `checkId` means add to that one,
+       * and neither means start a new counter sale. `OrderPane` reads whichever
+       * arrived and does not have to be told which kind it is.
+       */
+      { path: '/table/:tableId', component: OrderPane },
+      { path: '/check/:checkId', component: OrderPane },
+      { path: '/takeaway', component: OrderPane },
+      { path: '*', component: PickTable },
+    ],
+  },
   { path: ['/cashier', '/cashier/*'], component: CashierPage },
   { path: ['/backoffice', '/backoffice/*'], component: BackofficePage },
 

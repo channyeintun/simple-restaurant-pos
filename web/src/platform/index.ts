@@ -143,6 +143,23 @@ export interface Platform {
    * Calling it twice is harmless.
    */
   dismissSplash(): void;
+  /**
+   * A random, unguessable id for one attempt at something.
+   *
+   * `crypto.randomUUID` is a browser API and therefore belongs here rather than
+   * in a component, like everything else in this seam. Its one caller is the
+   * waiter's cart: the key that identifies a single tap of Send to kitchen, so
+   * that a retry after a lost reply is recognised as the same tap instead of
+   * printing the food twice.
+   *
+   * It has a fallback, which is unusual for this file and is the point. The
+   * Web Crypto API is only available in a secure context, and a restaurant that
+   * runs this over plain HTTP on the LAN — which is exactly the kind of place
+   * this app runs — would otherwise get a `TypeError` at the moment the waiter
+   * presses the button. Uniqueness is what the key needs; unguessability is a
+   * bonus it is nice to have and not what protects anything here.
+   */
+  randomId(): string;
   /** Base URL of the API. */
   apiBaseUrl: string;
 }

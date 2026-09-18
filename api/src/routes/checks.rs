@@ -713,8 +713,13 @@ struct PricedLine {
 /// `sendRoundSchema`, in its key order.
 fn parse_send(raw: &serde_json::Value) -> ApiResult<SendInput> {
     let fields = body::object(raw)?;
-    let table_id = fields.opt_string("tableId", &Str::ID)?;
-    let check_id = fields.opt_string("checkId", &Str::ID)?;
+    // `.nullable()`, not `.optional()`: the schema declares both keys as
+    // present-and-possibly-null, because "no table" is a *value* a takeaway
+    // order has rather than a field it leaves out. `nullable_string` is the
+    // reader that matches, and using `opt_string` here would refuse exactly the
+    // body `sendRoundSchema` tells a client to send.
+    let table_id = fields.nullable_string("tableId", &Str::ID)?;
+    let check_id = fields.nullable_string("checkId", &Str::ID)?;
     let client_key = fields.string("clientKey", &Str { trim: false, min: 8, max: 64, min_message: None })?;
 
     // The one rule zod cannot express as a field check and the schema states in
@@ -756,8 +761,10 @@ fn parse_send(raw: &serde_json::Value) -> ApiResult<SendInput> {
         let qty = line
             .int("qty", &Int::QTY)
             .map_err(|error| http::bad_request(format!("items[{index}].{}", error.message)))?;
+        // `.nullable()` again, and for the same reason: a line without a note
+        // sends `note: null` rather than leaving the key out.
         let note = line
-            .opt_string("note", &Str::text(120))
+            .nullable_string("note", &Str::text(120))
             .map_err(|error| http::bad_request(format!("items[{index}].{}", error.message)))?;
 
         lines.push(SendLine {

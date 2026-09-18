@@ -163,6 +163,26 @@ impl Body<'_> {
         Ok(Some(value.to_string()))
     }
 
+    /// A field declared `z.string().…nullable()` — present, and either a string
+    /// or `null`.
+    ///
+    /// Distinct from [`Body::opt_string`], and the distinction is zod's rather
+    /// than ours. `.optional()` admits `undefined` and refuses `null`;
+    /// `.nullable()` does the opposite. Both come back as `None` here because
+    /// both mean "nothing", but what they will *accept* differs, and a body
+    /// that used the wrong one would refuse exactly the value the client's own
+    /// schema tells it to send.
+    ///
+    /// Absent is an error, worded as the type issue zod reports for it — a
+    /// nullable field without `.optional()` still has to be there.
+    pub fn nullable_string(&self, key: &str, rule: &Str) -> ApiResult<Option<String>> {
+        match self.object.get(key) {
+            None => Err(type_issue(key, "string", "undefined")),
+            Some(Value::Null) => Ok(None),
+            Some(_) => self.opt_string(key, rule),
+        }
+    }
+
     /// A required integer.
     pub fn int(&self, key: &str, rule: &Int) -> ApiResult<i64> {
         match self.opt_int(key, rule)? {
@@ -402,6 +422,29 @@ mod tests {
         assert_eq!(
             message(it.opt_bool("wrong")),
             "wrong: Invalid input: expected boolean, received string"
+        );
+    }
+
+    /// `.nullable()` is the mirror of `.optional()`: `null` is a value it
+    /// accepts and an absent key is not. Every string below was taken from zod
+    /// 4.1 running `z.object({ a: z.string().min(1).max(64).nullable() })`.
+    #[test]
+    fn a_nullable_field_takes_null_but_not_absence() {
+        let raw = body(r#"{"nil":null,"ok":"x","blank":"","n":5}"#);
+        let it = object(&raw).unwrap();
+        assert_eq!(it.nullable_string("nil", &Str::ID).unwrap(), None);
+        assert_eq!(it.nullable_string("ok", &Str::ID).unwrap(), Some("x".to_string()));
+        assert_eq!(
+            message(it.nullable_string("missing", &Str::ID)),
+            "missing: Invalid input: expected string, received undefined"
+        );
+        assert_eq!(
+            message(it.nullable_string("blank", &Str::ID)),
+            "blank: Too small: expected string to have >=1 characters"
+        );
+        assert_eq!(
+            message(it.nullable_string("n", &Str::ID)),
+            "n: Invalid input: expected string, received number"
         );
     }
 

@@ -298,6 +298,36 @@ async function registerServiceWorker(): Promise<boolean> {
   }
 }
 
+/* ----------------------------------------------------------------- random */
+
+/**
+ * A random id for one attempt at something. Its only caller is the key on a
+ * tap of Send to kitchen.
+ *
+ * `crypto.randomUUID` needs a secure context — HTTPS or localhost — and a
+ * restaurant running this over plain HTTP on its own LAN is exactly the kind of
+ * place that has neither. On such a page `crypto.randomUUID` is `undefined` and
+ * calling it throws, at the moment a waiter presses the button, which is the
+ * worst possible moment for this app to discover a platform difference.
+ *
+ * So there are three steps down. `randomUUID`, then `getRandomValues`, then the
+ * timestamp-and-`Math.random` pair — and the last one is fine for what this is
+ * actually for. The key has to be **unique**, so that one tablet's tap is not
+ * mistaken for another's; it does not have to be unguessable, because guessing
+ * one gets you nothing but a replay of a round that already exists. The
+ * millisecond plus twelve random characters is unique across every tablet in a
+ * restaurant by a margin of many orders of magnitude.
+ */
+function randomId(): string {
+  const api = globalThis.crypto as Crypto | undefined;
+  if (typeof api?.randomUUID === 'function') return api.randomUUID();
+  if (typeof api?.getRandomValues === 'function') {
+    const bytes = api.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
 /* -------------------------------------------------------------------- env */
 
 /**
@@ -330,5 +360,6 @@ export const webPlatform: Platform = {
   deviceLanguage,
   setDocumentLanguage,
   dismissSplash,
+  randomId,
   apiBaseUrl,
 };

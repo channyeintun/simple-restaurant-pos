@@ -48,6 +48,29 @@ use worker::{event, Context, Env, Method, Request, Response, Result as WorkerRes
 
 use crate::http::{ApiError, ApiResult};
 
+/// Say something before dying.
+///
+/// A Rust panic compiled to wasm is a trap, and a trap takes the **isolate**
+/// down — not just the request that caused it, but every other request in
+/// flight on the same instance, and the next few until the runtime has built a
+/// new one. What reaches the client is a `__wbindgen_start is not a function`
+/// from the reinitialisation, which says nothing at all about what happened.
+///
+/// This costs a few hundred bytes and turns that into a log line naming the
+/// file and the line. It runs once per isolate, before any request.
+///
+/// It is not a substitute for not panicking. Every fallible path in this Worker
+/// answers with `ApiError` rather than unwrapping, and the handful of places
+/// that could only fail through a bug — an `INSERT … RETURNING` that returns
+/// nothing — answer 500 for exactly this reason: a 500 loses one request, a
+/// trap loses all of them.
+#[event(start)]
+pub fn start() {
+    std::panic::set_hook(Box::new(|info| {
+        worker::console_error!("panic: {info}");
+    }));
+}
+
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> WorkerResult<Response> {
     let cors = cors::Cors::read(&req, &crate::env::web_origin(&env));

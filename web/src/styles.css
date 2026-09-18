@@ -150,6 +150,24 @@
    * pane wants to be, which decides how much is left for the tables.
    */
   --pos-tile-min: 100px;
+  /*
+   * What a product tile is actually laid out at, as opposed to the floor it may
+   * never go below.
+   *
+   * 100px is the brief's *minimum* and it is the wrong number to build the grid
+   * on, because `auto-fill` makes as many tracks as fit: on the right-hand pane
+   * of a ten-inch tablet that is eleven columns, and a menu of six dishes comes
+   * out as six stamps in the corner of a large empty rectangle. At 9.5rem it is
+   * four or five columns, the dish name fits on one or two lines instead of
+   * three, and the price is readable without leaning in.
+   *
+   * `auto-fill` rather than `auto-fit` is still right, and this is why it has
+   * to be said: `auto-fit` collapses the empty tracks and stretches whatever is
+   * there to fill the row, so a category with two dishes in it would draw two
+   * tiles the size of a hand. A tile should be the same size on every screen of
+   * this app, whatever happens to be in the category.
+   */
+  --pos-tile-lg: 9.5rem;
   --pos-tile-gap: 10px;
   /* A table in the grid carries a number, a state and a total, so it is taller
      than a product tile is wide. */
@@ -803,4 +821,310 @@ md-outlined-icon-button {
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- waiter */
+
+/*
+ * A table in the grid.
+ *
+ * Taller than a product tile is wide, because it carries three things — what it
+ * is called, what state it is in, and what it has run up — and the name has to
+ * be readable from arm's length while the tablet is in a stand.
+ */
+.table-tile {
+  min-height: var(--pos-table-tile);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 12px;
+  position: relative;
+}
+
+.table-tile-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.table-tile-state {
+  font-size: 0.85rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/*
+ * An occupied table is tinted, not badged.
+ *
+ * The waiter is scanning a grid of a dozen tiles for the two that need
+ * something, and a fill is readable in peripheral vision where a small word in
+ * a corner is not. Amber is "open" everywhere in this app — the cashier's card
+ * and the backoffice's badges use the same pair — so the colour is learned
+ * once.
+ */
+.table-tile[data-open='true'] {
+  background: var(--pos-open-container);
+  color: var(--pos-open);
+}
+
+.table-tile[data-open='true'] .table-tile-state {
+  color: inherit;
+  font-weight: 600;
+}
+
+/* The tile the right-hand pane is currently showing. A ring rather than another
+   fill, so it composes with the open tint instead of fighting it. */
+.table-tile[data-current='true'] {
+  outline: 3px solid var(--md-sys-color-primary);
+  outline-offset: -3px;
+}
+
+/*
+ * A dot in the corner: this table has an order started and not sent.
+ *
+ * It is the one piece of state on this screen that lives only on this tablet —
+ * nobody else can see it, and it is lost with the tablet — so it is deliberately
+ * small and unlabelled. What it has to do is stop a waiter walking away from a
+ * half-tapped order, and a dot does that.
+ */
+.table-tile-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--pos-radius-pill);
+  background: var(--md-sys-color-primary);
+}
+
+/*
+ * A product tile. The brief's floor is 100x100 with the name and the price on
+ * it and the whole tile tappable — so it is one `<button>`, not a card with a
+ * button inside it, and there is nothing else on it to press.
+ */
+.product-tile {
+  min-height: var(--pos-tile-min);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 10px;
+}
+
+.product-tile-name {
+  font-weight: 600;
+  line-height: 1.25;
+  /* Three lines, then ellipsis. A 60-character dish name must not push the
+     price off the bottom of the tile and change the row's height. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.product-tile-price {
+  font-size: 0.9rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* How many of this dish are in the cart. It appears on the tile itself so the
+   waiter does not have to look down at the cart to count what they just tapped. */
+.product-tile-count {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: var(--pos-radius-pill);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ cart */
+
+/*
+ * One line of the cart: the stepper, the dish, the line total.
+ *
+ * `grid` rather than `flex`, because the three parts have to line up down the
+ * column — a stepper that shifted left when the dish above it had a note would
+ * be two targets that move under the thumb.
+ */
+.cart-line {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--pos-gap);
+  min-height: var(--pos-cart-row-h);
+  padding: 6px 4px;
+}
+
+.cart-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/*
+ * `−` and `+`, at the full touch size.
+ *
+ * This is where the temptation to go smaller is strongest — two of them on
+ * every row, and the rows are what the cart is made of — and it is exactly
+ * where going smaller costs the most: a waiter correcting a quantity is doing
+ * it in a hurry, one-handed, next to a customer.
+ */
+.cart-step {
+  width: var(--pos-touch);
+  height: var(--pos-touch);
+  border: 0;
+  border-radius: var(--pos-radius-pill);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cart-step:active {
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.cart-qty {
+  min-width: 2ch;
+  text-align: center;
+  font-family: var(--pos-typeface-numeric);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.cart-line-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The note, under the dish it belongs to, and tappable to change.
+ *
+ * Styled as a quiet link rather than a button, because it is the third-most
+ * important thing on a row that already has two 48px targets on it — but it is
+ * still a `<button>` and still 48px tall, which the padding below provides.
+ */
+.cart-note {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--md-sys-color-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cart-line-total {
+  font-family: var(--pos-typeface-numeric);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/*
+ * The send bar: the total and the one button that ends the task.
+ *
+ * `--pos-touch-lg` on the button, which is the only control in the app that
+ * gets it. It is pressed with a thumb while the waiter is looking at the table
+ * rather than at the screen, and nothing beside it should be easier to hit by
+ * accident — which is why Clear is a text button at the other end of the row.
+ */
+.send-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pos-gap);
+  padding-top: var(--pos-gap);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.send-bar md-filled-button {
+  --md-filled-button-container-height: var(--pos-touch-lg);
+  --md-filled-button-label-text-size: 1.1rem;
+}
+
+.send-total {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.send-total-value {
+  font-family: var(--pos-typeface-numeric);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+/* A round that has already gone to the kitchen, on the check panel above the
+   cart. Quieter than the cart, because it is history rather than something to
+   act on — with one exception per line, which is the void. */
+.sent-round {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.sent-round-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/*
+ * A separator between the three facts in a round's header, drawn rather than
+ * written.
+ *
+ * "Round 1 sent 05:25 Owner" reads as one broken sentence; "Round 1 · sent
+ * 05:25 · Owner" reads as three facts, which is what it is. It is a
+ * pseudo-element rather than a `·` in the markup because it is punctuation
+ * between items in a list, and a screen reader announcing "middle dot" three
+ * times per round is worse than the gap the flex `gap` already provides.
+ */
+.sent-round-head > span + span::before {
+  content: '·';
+  margin-right: 8px;
+}
+
+.sent-line {
+  display: grid;
+  grid-template-columns: 2.5ch 1fr auto auto;
+  align-items: center;
+  gap: var(--pos-gap);
+  min-height: var(--pos-touch);
+}
+
+.sent-line[data-voided='true'] {
+  color: var(--md-sys-color-on-surface-variant);
+  text-decoration: line-through;
+  /* The strike is the meaning here and not a style: this line was struck off,
+     the kitchen has been told, and the row stays on the bill saying so. */
+  text-decoration-thickness: 2px;
+}
+
+.sent-line-qty {
+  font-family: var(--pos-typeface-numeric);
+  font-weight: 700;
 }

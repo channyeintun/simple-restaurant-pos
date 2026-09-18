@@ -49,6 +49,77 @@ export const en = {
     admin: 'Manager',
   },
 
+  waiter: {
+    tables: 'Tables',
+    free: 'Free',
+    takeaway: 'Takeaway',
+    newTakeaway: 'New takeaway',
+    pickTable: 'Pick a table to start an order',
+    rounds: (count: number) => (count === 1 ? '1 round' : `${count} rounds`),
+    unsent: 'Unsent',
+    order: 'Order',
+    orderEmpty: 'Tap a dish to start the order',
+    noProducts: 'Nothing on the menu yet.',
+    // No "are you sure" on send — the brief is explicit — so the button says
+    // exactly what it does and says it once.
+    send: 'Send to kitchen',
+    sending: 'Sending…',
+    total: 'Total',
+    note: 'Note',
+    noteHint: 'Anything the kitchen needs to know',
+    clear: 'Clear',
+    clearHeadline: 'Clear this order?',
+    clearBody:
+      'Everything not yet sent to the kitchen is removed. Anything already sent stays on the bill.',
+    round: (seq: number) => `Round ${seq}`,
+    sentAt: (time: string) => `sent ${time}`,
+    voided: 'Voided',
+    void: 'Void',
+    voidHeadline: 'Void this line?',
+    voidBody: (name: string) =>
+      `${name} comes off the bill and the kitchen is sent a void slip. This cannot be undone.`,
+    // The banner after a send whose reply never came back. It says "could not
+    // confirm" rather than "failed", because the round may well have landed and
+    // telling a waiter it failed is how a table gets its food twice.
+    unconfirmed: "Could not confirm the kitchen got this order",
+    unconfirmedBody: 'Try again — if it did get through, this will not order it twice.',
+    discard: 'Discard',
+    discardHeadline: 'Discard this order?',
+    discardBody:
+      'The kitchen may already have it. Check with them before you send it again.',
+  },
+
+  cashier: {
+    openChecks: 'Open checks',
+    none: 'Nothing open',
+    takePayment: 'Take payment',
+    paymentHeadline: (name: string) => `Payment for ${name}`,
+    paying: 'Taking payment…',
+    paid: 'Paid',
+    live: 'Live',
+    reconnecting: 'Reconnecting…',
+    polling: 'Checking every few seconds',
+    // The one banner in this app somebody has to walk across the room about.
+    printFailed: (count: number) =>
+      count === 1
+        ? 'A kitchen ticket did not print'
+        : `${count} kitchen tickets did not print`,
+    printFailedLine: (table: string, error: string) => `${table} — ${error}`,
+    printFailedNoReason: 'the printer did not say why',
+    retryPrint: 'Print again',
+  },
+
+  ticket: {
+    // What the printer agent puts on the paper. Kept apart from the screens'
+    // strings because a thermal printer's built-in font is not a browser's: see
+    // Known limitations in the README.
+    round: (seq: number) => `ROUND ${seq}`,
+    voidHeader: 'VOID',
+    takeaway: 'TAKEAWAY',
+    table: (name: string) => `TABLE ${name}`,
+    staff: (name: string) => `Waiter: ${name}`,
+  },
+
   backoffice: {
     sections: {
       products: 'Products',

@@ -754,9 +754,30 @@ pub struct RoundItemRow {
     pub voided_by: Option<String>,
 }
 
-/// A payment, exactly as `payments` holds it.
+/// A payment, exactly as `payments` holds it — and `paymentSchema` sends it.
+///
+/// The one struct in this file that is both read from SQLite and written to a
+/// client, which is why `rename_all` is scoped to `serialize` and must stay
+/// that way. An unscoped `rename_all = "camelCase"` applies to **both**
+/// directions: the JSON going out gets `checkId`, and the row coming back from
+/// D1 is then expected to have `checkId` too — which it does not, because the
+/// column is `check_id`.
+///
+/// That mismatch does not fail politely. `worker`'s `D1Result::results` calls
+/// `serde_wasm_bindgen::from_value(...).unwrap()`, so a row that does not fit
+/// is a **panic**, a panic in wasm is a trap, and a trap takes the isolate down
+/// — every request in flight on it, plus the next few, which come back as
+/// `__wbindgen_start is not a function` from the reinitialisation and say
+/// nothing whatever about the actual cause. It cost an afternoon to find once;
+/// the `start` hook in `lib.rs` exists so it costs a log line next time.
+///
+/// Elsewhere the two directions are separate types — a `…Row` and a mapped
+/// value — and that separation is the general answer. This one is a single
+/// struct because a payment has six columns whose names are the same words on
+/// both sides bar the casing, and a mapper that copied six fields would be
+/// ceremony rather than a boundary.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct PaymentRow {
     pub id: String,
     pub check_id: String,

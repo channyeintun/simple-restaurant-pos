@@ -1,5 +1,7 @@
+import type { PrintJobStatus } from '@pos/shared';
 import { useQuery } from '@tanstack/solid-query';
 import { listDevices, listRoster, salesToday } from '../api/admin.js';
+import { getCheck, getTableCheck, listOpenChecks, listPrintJobs } from '../api/orders.js';
 import { me } from '../api/auth.js';
 import { listCategories, listProducts, listTables } from '../api/catalogue.js';
 import { ApiError } from '../api/client.js';
@@ -85,6 +87,25 @@ export const queryKeys = {
   roster: ['staff', 'roster'] as const,
   devices: ['devices'] as const,
   salesToday: ['reports', 'sales', 'today'] as const,
+
+  /*
+   * Ordering.
+   *
+   * `openChecks` is one list read by two screens — the cashier's board and the
+   * waiter's table grid — which is deliberate: two nearly identical lists would
+   * be two things to keep in step, and one of them would eventually say a table
+   * was free when it was not.
+   *
+   * `tableCheck` and `check` are separate keys for the same row, and that is
+   * *not* redundancy. The waiter asks "what is open on table 4", which has
+   * `null` as a perfectly good answer, and the cashier asks "show me check
+   * chk_x", which does not. Collapsing them would mean one of the two callers
+   * had to hold an id it does not have.
+   */
+  openChecks: ['checks', 'open'] as const,
+  tableCheck: (tableId: string) => ['checks', 'by-table', tableId] as const,
+  check: (checkId: string) => ['checks', checkId] as const,
+  printJobs: (status: PrintJobStatus) => ['print-jobs', status] as const,
 };
 
 /**
@@ -257,6 +278,97 @@ export function useSalesToday() {
     queryKey: queryKeys.salesToday,
     queryFn: ({ signal }) => salesToday(signal),
     staleTime: 30_000,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+/* -------------------------------------------------------------- ordering */
+
+/**
+ * Every open check.
+ *
+ * `staleTime: 0`, which is the opposite of everything above it and is right:
+ * this is the one list in the app that changes because of something somebody
+ * else did. A waiter walking back to the tables grid wants to know that table 6
+ * was paid two minutes ago, and the cashier's board is the whole subject of the
+ * realtime stream.
+ *
+ * Refetching is still not how either screen stays current. The cashier applies
+ * events with `setQueryData` and the waiter writes the response of its own send
+ * in; `staleTime: 0` only decides what happens when a screen is *re-entered*,
+ * which for a waiter is every time they walk back from a table.
+ */
+export function useOpenChecks() {
+  return useQuery(() => ({
+    queryKey: queryKeys.openChecks,
+    queryFn: ({ signal }) => listOpenChecks(signal),
+    staleTime: 0,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+/**
+ * The open check on one table, or null when it is free.
+ *
+ * The accessor is not decoration. `useQuery` is handed a **function** returning
+ * the options, and the key is built inside it, so walking from table 3 to table
+ * 4 re-keys the query and refetches. Passing a plain object — which is what the
+ * React version takes and what muscle memory types — would read `tableId` once
+ * and go on answering with table 3's check forever, silently. `lib/queries.ts`
+ * opens with that warning because this is the query it was written about.
+ *
+ * This single request is why a waiter tablet subscribes to nothing. A waiter is
+ * looking at one table and has just caused the change they are looking at; an
+ * open SSE connection would be 360 Upstash commands an hour per tablet, against
+ * a budget that has room for exactly one such connection in the building.
+ */
+export function useTableCheck(tableId: () => string | null) {
+  return useQuery(() => ({
+    queryKey: queryKeys.tableCheck(tableId() ?? ''),
+    queryFn: ({ signal }) => getTableCheck(tableId() as string, signal),
+    enabled: tableId() !== null,
+    staleTime: 0,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+/**
+ * One check by id.
+ *
+ * The cashier opens a card and the waiter reloads on `/waiter/check/chk_x`;
+ * both land here. It is a separate hook from {@link useTableCheck} rather than
+ * the same one with a different key, because the two questions have different
+ * answers: "what is open on table 4" may legitimately be nothing, and "show me
+ * this check" may not.
+ *
+ * The accessor again, and for the reason at the top of this file: the key is
+ * built inside the options function, so moving from one check to the next
+ * re-keys the query. A plain object would go on answering with the first one.
+ */
+export function useCheck(checkId: () => string | null) {
+  return useQuery(() => ({
+    queryKey: queryKeys.check(checkId() ?? ''),
+    queryFn: ({ signal }) => getCheck(checkId() as string, signal),
+    enabled: checkId() !== null,
+    staleTime: 0,
+    retry: retryUnlessUnauthorized,
+  }));
+}
+
+/**
+ * The print queue, in one status.
+ *
+ * `failed` is the cashier's red banner and is polled on the same fallback
+ * cadence as the rest of that screen; `print_job.failed` on the stream is what
+ * normally raises it, and this is the backstop for a tablet whose stream is
+ * down — which is exactly when a printer problem is most likely to go unnoticed.
+ */
+export function usePrintJobs(status: PrintJobStatus, enabled = true) {
+  return useQuery(() => ({
+    queryKey: queryKeys.printJobs(status),
+    queryFn: ({ signal }) => listPrintJobs(status, signal),
+    enabled,
+    staleTime: 0,
     retry: retryUnlessUnauthorized,
   }));
 }

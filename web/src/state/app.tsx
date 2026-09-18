@@ -150,14 +150,39 @@ export function useApp(): AppValue {
    * spells out: the response that produced this identity has already told us
    * everything a refetch would, and the person standing at the tablet is
    * waiting to start a shift rather than to watch a second request. The config
-   * is carried over untouched because nothing but a deploy can change it, and
-   * an entry that has never been fetched is left alone — writing a partial `Me`
-   * would hand the next reader an object with no currency in it.
+   * is carried over untouched, because nothing but a deploy can change it.
+   *
+   * ## Unless there is nothing to carry over
+   *
+   * Writing a partial `Me` would hand the next reader an object with no
+   * currency in it, so that is never done — but *stopping* there is not the
+   * answer either, and getting this wrong breaks the one path every tablet
+   * takes exactly once. A device that has never been claimed boots, asks
+   * `GET /auth/me`, and is told 401; the entry is then in an error state with
+   * no data, and `retryUnlessUnauthorized` has quite rightly stopped it trying
+   * again. A moment later the claim link is redeemed and hands back an
+   * identity — and an updater that returns the previous value when there is no
+   * previous value writes nothing at all. The tablet is claimed, holds a
+   * working token, and goes on showing "this tablet has not been set up".
+   *
+   * So the empty case refetches instead. It is one request on the one screen in
+   * the app where a request is unavoidable anyway — the claim reply carries an
+   * identity but not the currency or the offset, and this tablet has neither.
    */
   const adopt = (next: Identity | null): void => {
-    queryClient.setQueryData<Me>(queryKeys.me, (previous) =>
-      previous && next ? { ...previous, identity: next } : previous,
-    );
+    const previous = queryClient.getQueryData<Me>(queryKeys.me);
+    if (previous && next) {
+      queryClient.setQueryData<Me>(queryKeys.me, { ...previous, identity: next });
+      return;
+    }
+    /*
+     * `refetchQueries`, not `invalidateQueries`. Invalidation marks an entry
+     * stale and leaves the refetch to whatever policy applies, and the policy
+     * that applies here is the one that just decided not to retry a 401. A
+     * refetch runs the query function, which is the point: the credential has
+     * changed since it last failed.
+     */
+    void queryClient.refetchQueries({ queryKey: queryKeys.me });
   };
 
   return {

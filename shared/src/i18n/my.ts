@@ -51,6 +51,70 @@ export const my: Messages = {
     admin: 'မန်နေဂျာ',
   },
 
+  waiter: {
+    tables: 'စားပွဲများ',
+    free: 'အားနေသည်',
+    takeaway: 'ပါဆယ်',
+    newTakeaway: 'ပါဆယ် အသစ်',
+    pickTable: 'အော်ဒါ စတင်ရန် စားပွဲ ရွေးပါ',
+    // Burmese has no plural form, so one string covers both.
+    rounds: (count) => `အကြိမ် ${count}`,
+    unsent: 'မပို့ရသေး',
+    order: 'အော်ဒါ',
+    orderEmpty: 'အော်ဒါ စတင်ရန် ဟင်းတစ်ခု နှိပ်ပါ',
+    noProducts: 'မီနူးတွင် ဘာမှ မရှိသေးပါ။',
+    send: 'မီးဖိုချောင်သို့ ပို့မည်',
+    sending: 'ပို့နေသည်…',
+    total: 'စုစုပေါင်း',
+    note: 'မှတ်ချက်',
+    noteHint: 'မီးဖိုချောင်က သိသင့်သည့် အရာ',
+    clear: 'ရှင်းမည်',
+    clearHeadline: 'ဤအော်ဒါကို ရှင်းမလား?',
+    clearBody:
+      'မီးဖိုချောင်သို့ မပို့ရသေးသည်များ ပျက်သွားပါမည်။ ပို့ပြီးသားများ ငွေစာရင်းတွင် ကျန်ရှိနေပါမည်။',
+    round: (seq) => `အကြိမ် ${seq}`,
+    sentAt: (time) => `${time} တွင် ပို့ပြီး`,
+    voided: 'ပယ်ဖျက်ပြီး',
+    void: 'ပယ်ဖျက်မည်',
+    voidHeadline: 'ဤစာကြောင်းကို ပယ်ဖျက်မလား?',
+    voidBody: (name) =>
+      `${name} သည် ငွေစာရင်းမှ ထွက်သွားပြီး မီးဖိုချောင်သို့ ပယ်ဖျက်စာရွက် ပို့ပါမည်။ ပြန်ပြင်၍ မရပါ။`,
+    unconfirmed: 'မီးဖိုချောင် ရရှိမရရှိ အတည်မပြုနိုင်ပါ',
+    unconfirmedBody: 'ထပ်စမ်းကြည့်ပါ — ရောက်နှင့်ပြီးဖြစ်လျှင် နှစ်ကြိမ် မှာမည် မဟုတ်ပါ။',
+    discard: 'ပယ်မည်',
+    discardHeadline: 'ဤအော်ဒါကို ပယ်မလား?',
+    discardBody: 'မီးဖိုချောင်တွင် ရောက်နှင့်နိုင်ပါသည်။ ထပ်မပို့ခင် သူတို့နှင့် အရင်စစ်ပါ။',
+  },
+
+  cashier: {
+    openChecks: 'ဖွင့်ထားသော စာရင်းများ',
+    none: 'ဖွင့်ထားသည် မရှိပါ',
+    takePayment: 'ငွေရှင်းမည်',
+    paymentHeadline: (name) => `${name} အတွက် ငွေရှင်းခြင်း`,
+    paying: 'ငွေရှင်းနေသည်…',
+    paid: 'ရှင်းပြီး',
+    live: 'တိုက်ရိုက်',
+    reconnecting: 'ပြန်ချိတ်နေသည်…',
+    polling: 'စက္ကန့်အနည်းငယ်ခြား စစ်နေသည်',
+    printFailed: (count) => `မီးဖိုချောင် စာရွက် ${count} ခု ထွက်မလာပါ`,
+    printFailedLine: (table, error) => `${table} — ${error}`,
+    printFailedNoReason: 'ပရင်တာက အကြောင်းပြချက် မပြောပါ',
+    retryPrint: 'ထပ်ထုတ်မည်',
+  },
+
+  ticket: {
+    // Left in English on purpose. A thermal printer's built-in font has no
+    // Myanmar glyphs, so a Burmese header prints as boxes unless the agent
+    // rasterises — see Known limitations in the README. Dish names still come
+    // from the menu and are whatever the manager typed, which is the same
+    // problem and not one this catalogue can solve by choosing differently.
+    round: (seq) => `ROUND ${seq}`,
+    voidHeader: 'VOID',
+    takeaway: 'TAKEAWAY',
+    table: (name) => `TABLE ${name}`,
+    staff: (name) => `Waiter: ${name}`,
+  },
+
   backoffice: {
     sections: {
       products: 'အစားအစာများ',
