@@ -226,6 +226,17 @@ export function PinPage() {
                     }}
                   >
                     <span style={{ 'font-weight': '600' }}>{person.name}</span>
+                    {/* A middot rather than a space. A name and a role set as two
+                        bare words read as one repeated phrase the moment they
+                        resemble each other — and they will, because "Manager" is
+                        both a plausible name for the owner to type and the label
+                        this app gives the admin role. */}
+                    <span
+                      aria-hidden="true"
+                      style={{ color: 'var(--md-sys-color-outline)' }}
+                    >
+                      ·
+                    </span>
                     <span
                       style={{
                         'font-size': '0.85rem',
@@ -281,7 +292,16 @@ export function PinPage() {
         is reaching for the first digit of their second attempt — which is how
         one wrong PIN becomes two.
       */}
-      <div style={{ 'min-height': '3.5rem', display: 'flex', 'align-items': 'center' }}>
+      <div
+        style={{
+          'min-height': '3.5rem',
+          display: 'flex',
+          'align-items': 'center',
+          /* The banner sizes to its text, so without this it sits against the
+             left edge of a column whose every other child is centred. */
+          'justify-content': 'center',
+        }}
+      >
         <Show when={failure()}>
           {(reason) => (
             <ErrorBanner>

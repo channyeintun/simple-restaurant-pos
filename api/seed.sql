@@ -23,7 +23,10 @@
 -- hand-written digest that disagrees about the encoding just fails to match
 -- four digits at a time.
 INSERT OR IGNORE INTO staff (id, name, pin_hash, role, active, created_at) VALUES
-  ('stf_admin', 'Manager', NULL, 'admin', 1, '2026-01-01T00:00:00.000Z');
+  -- A name, not a job title: the screen that lists staff shows the role
+  -- beside the name, so seeding somebody called "Manager" with the admin
+  -- role renders as "Manager \u00b7 Manager". Replace it with the real owner.
+  ('stf_admin', 'Owner', NULL, 'admin', 1, '2026-01-01T00:00:00.000Z');
 
 -- One tablet to claim, so there is something for the bootstrap script to mint
 -- a link for on a fresh database:
