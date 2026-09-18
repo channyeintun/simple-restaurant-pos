@@ -13,9 +13,28 @@ import { my } from './my.js';
  * `m.pin.enterPin(staff.name)` is checked by the compiler; `t('pin.enterPin',
  * { name })` is not, and the parameter names rot silently.
  *
- * Lives in /shared rather than /web because the browser is not the only thing
- * here that renders words: the printer agent is a Node process on the
- * restaurant's LAN, importing this same package for what a kitchen ticket says.
+ * Lives in /shared rather than /web because it is a contract about wording
+ * rather than a frontend detail, and because both halves of it have to be kept
+ * in step by the compiler wherever they are read.
+ *
+ * ## The printer agent does not read it, and cannot
+ *
+ * That was the original intention and it does not survive contact with how the
+ * agent runs. `agent/` has no build step on purpose — the thing running in the
+ * restaurant should be the thing somebody can open and read when it misbehaves
+ * — so it is started with node's type stripping, and stripping does not rewrite
+ * the `.js` specifiers this package's modules import each other with. Node
+ * resolves `@pos/shared/i18n` and then looks for `./en.js`, which does not
+ * exist. Rewriting every import in this package to `.ts` to suit one consumer
+ * would be the tail wagging the dog.
+ *
+ * So the five words a kitchen ticket carries — ROUND, VOID, TAKEAWAY, TABLE and
+ * the waiter's line — live in `agent/src/index.ts`, next to the ESC/POS bytes
+ * that draw them, and they are deliberately English. A thermal printer's
+ * built-in font has no Myanmar glyphs, so a Burmese header prints as boxes
+ * unless the agent rasterises; the README says so under Known limitations. Dish
+ * names come from the menu and are whatever the manager typed, which is the
+ * same problem and not one a catalogue can solve by choosing differently.
  */
 
 export const LOCALES = ['en', 'my'] as const;

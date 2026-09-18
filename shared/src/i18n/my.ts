@@ -102,19 +102,6 @@ export const my: Messages = {
     retryPrint: 'ထပ်ထုတ်မည်',
   },
 
-  ticket: {
-    // Left in English on purpose. A thermal printer's built-in font has no
-    // Myanmar glyphs, so a Burmese header prints as boxes unless the agent
-    // rasterises — see Known limitations in the README. Dish names still come
-    // from the menu and are whatever the manager typed, which is the same
-    // problem and not one this catalogue can solve by choosing differently.
-    round: (seq) => `ROUND ${seq}`,
-    voidHeader: 'VOID',
-    takeaway: 'TAKEAWAY',
-    table: (name) => `TABLE ${name}`,
-    staff: (name) => `Waiter: ${name}`,
-  },
-
   backoffice: {
     sections: {
       products: 'အစားအစာများ',

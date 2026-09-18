@@ -109,17 +109,6 @@ export const en = {
     retryPrint: 'Print again',
   },
 
-  ticket: {
-    // What the printer agent puts on the paper. Kept apart from the screens'
-    // strings because a thermal printer's built-in font is not a browser's: see
-    // Known limitations in the README.
-    round: (seq: number) => `ROUND ${seq}`,
-    voidHeader: 'VOID',
-    takeaway: 'TAKEAWAY',
-    table: (name: string) => `TABLE ${name}`,
-    staff: (name: string) => `Waiter: ${name}`,
-  },
-
   backoffice: {
     sections: {
       products: 'Products',

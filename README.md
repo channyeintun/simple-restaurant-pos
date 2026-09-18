@@ -437,6 +437,14 @@ long-lived token.
 - **The realtime keepalive is the library's, not ours.** If Upstash usage ever
   becomes a problem, the cashier's idle timeout is the first knob and the
   `PubSub` interface is the escape hatch.
+- **A kitchen ticket is printed in English, whatever the tablets are set to.**
+  The five words on a slip — ROUND, VOID, TAKEAWAY, TABLE and the waiter's line
+  — live in `agent/src/index.ts` rather than in `shared/src/i18n/`, and they are
+  English because a thermal printer's built-in character set has no Myanmar
+  glyphs: a Burmese header prints as a row of boxes. Dish names come from the
+  menu and are printed exactly as the manager typed them, so a Burmese menu will
+  print as boxes too. The fix is a printer that can be driven in raster mode,
+  which is a different agent and not V1.
 - **The Burmese is unreviewed by a native speaker.** English is the source of
   truth in `shared/src/i18n/`, and every other catalogue is typed as `typeof en`
   so a missing key is a build error — but a key that is present and awkward is

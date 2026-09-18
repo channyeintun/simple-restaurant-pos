@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /**
  * The printer agent: the only part of this system that runs inside the
@@ -246,6 +248,45 @@ export interface PendingJob {
   kind: 'ticket' | 'void';
   /** How many times this one has already been tried. Three is the end of it. */
   attempts: number;
+  /**
+   * What this slip says, rendered by the Worker.
+   *
+   * This is what keeps the agent free of rules entirely. It does not know what
+   * a round is, which lines belong on a void, how a check is totalled or what
+   * time zone the restaurant is in; a doc comes in and ESC/POS bytes go out.
+   * The rendering is `pos_core::ticket::render_ticket`, twinned with
+   * `shared/src/ticket.ts` and held to the same test cases, so what the kitchen
+   * is handed and what a screen would show are the same thing by construction.
+   */
+  ticket: TicketDoc;
+}
+
+/**
+ * The ticket, exactly as `ticketDocSchema` declares it.
+ *
+ * Declared here rather than imported, like {@link PendingJob} above, and for a
+ * reason that is worth stating once: this workspace has **no runtime
+ * dependencies**, deliberately. Pulling `@pos/shared` in would put zod on a
+ * machine in a restaurant to validate seven fields, and would not work anyway —
+ * `agent/` has no build step, node's type stripping does not rewrite the `.js`
+ * specifiers that package imports itself with, and giving it one would mean the
+ * thing running in the shop is no longer the thing somebody can open and read
+ * when it misbehaves.
+ *
+ * What that costs is that a change to the doc's shape has to be made twice. It
+ * is a flat object of seven fields that has not changed since it was written,
+ * and `tsc` here would not have caught a change on the Rust side anyway.
+ */
+export interface TicketDoc {
+  kind: 'ticket' | 'void';
+  /** The round's number within its check. How the kitchen finds the original. */
+  seq: number;
+  /** The table's name, or null for takeaway and the counter. */
+  table: string | null;
+  /** `19:30`, already in the restaurant's own offset. */
+  time: string;
+  staff: string;
+  lines: { qty: number; name: string; note: string | null }[];
 }
 
 /**
@@ -425,23 +466,229 @@ async function attempt(config: AgentConfig, job: PendingJob): Promise<boolean> {
   return true;
 }
 
-/* ------------------------------------------------- MILESTONE 4: the gap --- */
+/* ------------------------------------------------------------------ ESC/POS */
+
+/*
+ * The bytes.
+ *
+ * This is the agent's own business and nobody else's: what a ticket *says* is
+ * `shared/src/ticket.ts` and its Rust twin, held to the same test cases on both
+ * sides, and what it *is* on the wire is an escape code for double-height text
+ * and a knife. Keeping them apart is what lets the rules be tested without a
+ * printer and the printer be changed without touching the rules.
+ *
+ * ESC/POS is a 1980s command set that every thermal printer worth buying still
+ * speaks. The handful of sequences below are the ones with no plausible
+ * alternative, and each is named because `\x1b\x21\x30` means nothing to
+ * anybody reading this at midnight.
+ */
+
+/** `ESC @` — reset. Undoes whatever the last job left the printer in. */
+const INIT = '\x1b@';
+/** `ESC a n` — 0 left, 1 centre. */
+const ALIGN_LEFT = '\x1ba\x00';
+const ALIGN_CENTRE = '\x1ba\x01';
+/**
+ * `ESC ! n` — the character style, as a bit field. 0x10 is double height and
+ * 0x20 is double width, so 0x30 is both: the size a header has to be to be read
+ * off a rail above a hot stove, at arm's length, by somebody who is not
+ * standing still.
+ */
+const SIZE_NORMAL = '\x1b!\x00';
+const SIZE_LARGE = '\x1b!\x30';
+const SIZE_TALL = '\x1b!\x10';
+/** `ESC E n` — emphasis on and off. */
+const BOLD_ON = '\x1bE\x01';
+const BOLD_OFF = '\x1bE\x00';
+/**
+ * `GS V 66 n` — partial cut after feeding `n` dots.
+ *
+ * Partial rather than full, because a full cut drops the slip on the floor and
+ * a partial one leaves it hanging for somebody to tear off. The feed is what
+ * gets the last line clear of the blade; printers vary, and 3 is the value that
+ * works on the cheap ones without wasting a centimetre on the good ones.
+ */
+const CUT = '\x1dV\x42\x03';
 
 /**
- * Put one job on paper. **Not implemented — this is milestone 4.**
+ * The words on the paper.
  *
- * What goes here: open a TCP socket to `printerHost:printerPort`, write the
- * ESC/POS byte stream for the ticket, and resolve only once the socket has
- * flushed and closed cleanly. The bytes are the agent's business alone — what a
- * ticket *says* is `shared/src/ticket.ts` and its Rust twin, tested on both
- * sides; what it *is* on the wire is an escape code for double-height text and
- * a cut command, and belongs nowhere near either.
+ * Five strings, in English, and they live here rather than in
+ * `shared/src/i18n/` — which is where the rest of this app's words are — for
+ * two reasons that both point the same way. `agent/` has no build step, so it
+ * cannot import that package at all (node's type stripping does not rewrite the
+ * `.js` specifiers it uses internally). And a thermal printer's built-in
+ * character set has no Myanmar glyphs, so a Burmese header would print as a row
+ * of boxes: the choice is not between two languages, it is between English and
+ * nothing.
  *
- * It throws rather than returning, so that the day it is written it slots into
- * `attempt` above with the failure path already correct.
+ * Dish names are a different matter and are printed exactly as the manager
+ * typed them. If the menu is in Burmese they will be boxes too, and that is a
+ * property of the hardware rather than of this decision — the README says so
+ * under Known limitations, and the fix is a printer that rasterises.
  */
-function print(_config: AgentConfig, _job: PendingJob): Promise<void> {
-  return Promise.reject(new Error('printing is not implemented yet (milestone 4)'));
+const WORDS = {
+  round: (seq: number) => `ROUND ${seq}`,
+  voidHeader: 'VOID',
+  takeaway: 'TAKEAWAY',
+  table: (name: string) => `TABLE ${name}`,
+  staff: (name: string) => `Waiter: ${name}`,
+};
+
+/**
+ * How many characters fit across the paper.
+ *
+ * 42 is 80mm at the usual font; 58mm paper gives 32. It is a constant rather
+ * than a config field because wrapping is the only thing that reads it and
+ * wrapping degrades gracefully — a line that is too long for 58mm paper wraps
+ * itself in the printer rather than being lost. Making it a setting would be a
+ * fifth thing for somebody to get wrong over the phone.
+ */
+const COLUMNS = 42;
+
+/**
+ * Wrap a dish name under its quantity.
+ *
+ * The quantity column is three characters and a space, so a name that runs past
+ * the edge continues indented under itself rather than starting again at the
+ * margin — which would read as a second dish. Breaking on spaces where there
+ * are any and mid-word where there are not, because a 40-character word with no
+ * spaces in it still has to end up on the paper.
+ */
+function wrap(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line === '') {
+      line = word;
+    } else if (line.length + 1 + word.length <= width) {
+      line += ` ${word}`;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+    while (line.length > width) {
+      lines.push(line.slice(0, width));
+      line = line.slice(width);
+    }
+  }
+  if (line !== '') lines.push(line);
+  return lines.length > 0 ? lines : [''];
+}
+
+/**
+ * One ticket, as the byte string that draws it.
+ *
+ * Exported because it is the only part of the printing path that can be checked
+ * without a printer, and `agent/test/ticket.test.ts` checks it.
+ *
+ * The layout is dictated by where it is read: pinned to a rail in a kitchen,
+ * glanced at while doing something else. So the table is the biggest thing on
+ * it, the round number is next, and the quantity is bold at the left margin of
+ * every line — a cook scanning a slip is counting portions, not reading prose.
+ * A void reverses only the header, because everything else about it is the same
+ * question ("what, and how many") asked backwards.
+ */
+export function renderEscPos(doc: TicketDoc): string {
+  const out: string[] = [INIT, ALIGN_CENTRE];
+
+  // The header. A void says so first and in the largest type on the slip: the
+  // kitchen is holding a piece of paper that says to cook this, and the whole
+  // job of this one is to be unmistakably not that.
+  if (doc.kind === 'void') {
+    out.push(SIZE_LARGE, BOLD_ON, `${WORDS.voidHeader}\n`, BOLD_OFF, SIZE_NORMAL);
+  }
+
+  out.push(SIZE_LARGE, BOLD_ON);
+  out.push(`${doc.table === null ? WORDS.takeaway : WORDS.table(doc.table)}\n`);
+  out.push(BOLD_OFF, SIZE_NORMAL);
+
+  out.push(SIZE_TALL, `${WORDS.round(doc.seq)}\n`, SIZE_NORMAL);
+  out.push(`${doc.time}  ${WORDS.staff(doc.staff)}\n`);
+  out.push(ALIGN_LEFT, `${'-'.repeat(COLUMNS)}\n`);
+
+  // The lines. Double height throughout, which halves how many fit on a slip
+  // and is worth it every time: this is the part somebody reads at a distance
+  // while their hands are full.
+  for (const line of doc.lines) {
+    const qty = String(line.qty).padStart(2, ' ');
+    const wrapped = wrap(line.name, COLUMNS / 2 - 4);
+    out.push(SIZE_TALL, BOLD_ON, `${qty}  ${wrapped[0] ?? ''}\n`, BOLD_OFF);
+    for (const continuation of wrapped.slice(1)) out.push(`    ${continuation}\n`);
+    out.push(SIZE_NORMAL);
+
+    // The note is the one modifier this app has, and it is the one thing on the
+    // slip that changes what the kitchen *does* rather than how much of it. It
+    // is indented under its dish and marked, so it cannot be read as another
+    // line of the order.
+    if (line.note !== null) {
+      for (const noteLine of wrap(line.note, COLUMNS - 6)) {
+        out.push(`    * ${noteLine}\n`);
+      }
+    }
+  }
+
+  // Feed past the blade, then cut. Without the feed the last line is inside the
+  // mechanism and comes off on the next ticket.
+  out.push(`${'-'.repeat(COLUMNS)}\n\n\n`, CUT);
+  return out.join('');
+}
+
+/**
+ * Put one job on paper.
+ *
+ * Opens a socket, writes the bytes, and resolves **only once the printer has
+ * taken them and the connection has closed cleanly**. Every part of that
+ * sentence is load-bearing: `socket.write` resolving means the bytes left this
+ * process, not that anything printed them, and a promise that settled there
+ * would ack a ticket that is still sitting in a TCP buffer on a printer that is
+ * switched off. Waiting for `close` after `end` is the closest thing raw 9100
+ * offers to an acknowledgement — there is no protocol here, just a pipe.
+ *
+ * The timeout is the other half. A printer that is powered but wedged accepts a
+ * connection and then never reads, which without this would park the agent
+ * forever on one ticket while the rest of the evening's orders queue up behind
+ * it. Fifteen seconds is far longer than a slip takes and far shorter than a
+ * service.
+ */
+const PRINT_TIMEOUT_MS = 15_000;
+
+function print(config: AgentConfig, job: PendingJob): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: config.printerHost, port: config.printerPort });
+    // `settled` rather than trusting the event order: a socket can emit `error`
+    // after `close`, and a promise that rejects after resolving is a crash in
+    // node rather than a no-op.
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+
+    socket.setTimeout(PRINT_TIMEOUT_MS, () => {
+      finish(new Error(`printer ${config.printerHost}:${config.printerPort} stopped responding`));
+    });
+    socket.on('error', (error) => finish(error));
+    // `close` and not `end`: `end` is the printer saying it is finished
+    // talking, which it never does, whereas `close` fires when our own `end`
+    // has flushed and the socket is down.
+    socket.on('close', (hadError) => {
+      finish(hadError ? new Error('the connection to the printer failed') : undefined);
+    });
+
+    socket.on('connect', () => {
+      // `binary`, not `utf8`. Every byte in a ticket is either an ESC/POS
+      // command or a character in the printer's own code page, and encoding a
+      // command byte as UTF-8 would turn `\x1b!` into two bytes and the rest of
+      // the slip into noise. It also means a non-ASCII dish name is sent as
+      // whatever the low byte is and prints as the printer's own glyph for it,
+      // which is the honest behaviour: this is a device with one font.
+      socket.end(Buffer.from(renderEscPos(job.ticket), 'binary'));
+    });
+  });
 }
 
 /* ------------------------------------------------------------------- main */
@@ -465,24 +712,51 @@ async function main(): Promise<void> {
   console.log(`[agent] printer ${config.printerHost}:${config.printerPort}`);
   console.log(`[agent] poll   every ${POLL_INTERVAL_MS / 1000}s, give up on a job after 3 attempts`);
 
-  // The milestone-4 stop.
-  //
-  // Everything above this line is real: the config was read and validated, and
-  // the loop below it is the shape the finished agent runs. What is missing is
-  // `print`, and starting the loop without it would not be a harmless no-op —
-  // it would poll the real queue, fail every ticket it was handed, spend all
-  // three attempts on each one, and leave the cashier looking at a red banner
-  // that says "printing is not implemented yet" about food a table is waiting
-  // for. Exiting non-zero is the honest version of that: a supervisor sees a
-  // process that will not start, which is what is true.
-  console.error(
-    '\n[agent] not started: ESC/POS printing arrives in milestone 4.\n' +
-      '        The config above is valid, so nothing here needs changing when it does.\n',
-  );
-  process.exit(1);
+  /*
+   * Stop politely.
+   *
+   * `SIGTERM` is what a supervisor sends on `systemctl stop` and what Docker
+   * sends on `docker stop`, and the useful thing to do with it is finish the
+   * ticket currently being written and then go. There is nothing to flush and
+   * no state to save — an unacked job stays `pending`, which is the whole
+   * design — so this is really just a log line that distinguishes "somebody
+   * stopped it" from "it fell over", in a log somebody will read tomorrow
+   * morning wondering why the kitchen went quiet.
+   */
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      console.log(`[agent] ${signal} — stopping. Anything unprinted stays queued.`);
+      process.exit(0);
+    });
+  }
 
-  // Unreachable until milestone 4 deletes the block above:
-  // await run(config);
+  try {
+    await run(config);
+  } catch (error) {
+    // Only `FatalError` reaches here — everything else is weather and the loop
+    // keeps going. A non-zero exit is what tells a supervisor to stop
+    // restarting this and what puts the reason in front of a person, which is
+    // the only thing that resolves a revoked token.
+    console.error(`[agent] ${describe(error)}`);
+    process.exit(1);
+  }
 }
 
-await main();
+/*
+ * Run only when this file is what node was pointed at.
+ *
+ * Without the guard, `main()` runs on *import* — and `agent/test/ticket.test.ts`
+ * imports this module to check the ESC/POS bytes, so the test suite would try
+ * to read a config file, fail to find one, and exit 2 before asserting
+ * anything. A module that cannot be imported without starting a process is a
+ * module that cannot be tested.
+ *
+ * `pathToFileURL(process.argv[1])` rather than `import.meta.main`, which only
+ * arrived in node 24. This runs on a machine in a restaurant, chosen by
+ * whoever set it up, and the type stripping it needs has been there since 22.6
+ * — there is no reason for the entry-point check to be the thing that raises
+ * the floor.
+ */
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}

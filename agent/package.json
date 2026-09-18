@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Printer agent — polls the Worker for pending print jobs and prints ESC/POS to the kitchen printer on the restaurant LAN.",
+  "description": "Printer agent \u2014 polls the Worker for pending print jobs and prints ESC/POS to the kitchen printer on the restaurant LAN.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "start": "node --experimental-strip-types src/index.ts"
+    "start": "node --experimental-strip-types src/index.ts",
+    "test": "node --experimental-strip-types test/ticket.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
