@@ -235,7 +235,7 @@ pub async fn get_device_by_claim_nonce(
     let row: Option<DeviceRow> = db
         .prepare(
             "SELECT * FROM devices
-              WHERE claim_nonce = ?1 AND claim_expires_at > ?2",
+        WHERE claim_nonce = ?1 AND claim_expires_at > ?2",
         )
         .bind(&[text(nonce), text(now)])?
         .first(None)
@@ -269,8 +269,8 @@ pub async fn list_staff(db: &D1Database) -> WorkerResult<Vec<StaffName>> {
     let results = db
         .prepare(
             "SELECT id, name, role FROM staff
-              WHERE active = 1
-              ORDER BY name COLLATE NOCASE ASC",
+        WHERE active = 1
+        ORDER BY name COLLATE NOCASE ASC",
         )
         .all()
         .await?;
@@ -301,7 +301,7 @@ pub async fn staff_for_pin(db: &D1Database) -> WorkerResult<Vec<StaffPinRow>> {
     let results = db
         .prepare(
             "SELECT id, pin_hash FROM staff
-              WHERE active = 1 AND pin_hash IS NOT NULL",
+        WHERE active = 1 AND pin_hash IS NOT NULL",
         )
         .all()
         .await?;

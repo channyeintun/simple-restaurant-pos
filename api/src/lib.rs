@@ -70,7 +70,7 @@ async fn dispatch(req: &mut Request, env: &Env) -> ApiResult<Response> {
     let path = req.path();
 
     // 2. `GET /health`. Unauthenticated because the thing asking is a deploy
-    // script or a uptime check, and because "is this Worker up" is not a
+    // script or an uptime check, and because "is this Worker up" is not a
     // question that should need a credential to answer.
     if req.method() == Method::Get && path == "/health" {
         return health(env).map_err(ApiError::from);

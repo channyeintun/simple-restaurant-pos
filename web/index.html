@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover so the layout can pad for a tablet's rounded corners
+      and home indicator — the waiter's cart sits along the bottom edge, which
+      is exactly where that inset lands.
+
+      `maximum-scale=5` rather than a zoom lock: a POS is read at arm's length
+      by whoever is on shift, and somebody who needs to magnify a price has to
+      be able to.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5"
+    />
+    <!--
+      One theme colour, not a light/dark pair. `styles.css` explains why this
+      app does not follow `prefers-color-scheme`: a till has to look the same on
+      every tablet in the room, in a bright dining room, and must not change
+      contrast at sunset because one device scheduled dark mode.
+    -->
+    <meta name="theme-color" content="#eef0f4" />
+    <meta
+      name="description"
+      content="Point-of-sale for the restaurant — tables, orders, kitchen tickets and payment."
+    />
+
+    <!--
+      PWA. The manifest asks for `landscape` because the waiter screen is two
+      panes side by side — tables on the left, the open table and its cart on
+      the right — and that is the shape it is designed at. The manifest only
+      governs an installed launch; the stylesheet still lays out for portrait,
+      which is what a tablet in a browser tab, or an OS that ignores the
+      preference, will give it.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
+    <!-- iOS ignores the manifest; these are what make an installed app render
+         full-screen with the right status bar. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <!-- `default`, not the `black-translucent` a dark app wants: this one is
+         light, so dark status text on the system's own light bar is what
+         matches it. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="POS" />
+    <!-- Inline so the app never makes a network request for a 16px icon. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300458f' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h12v18l-3-2-3 2-3-2-3 2Z'/%3E%3Cpath d='M9 8h6M9 12h6M9 16h3'/%3E%3C/svg%3E"
+    />
+    <title>Restaurant POS</title>
+
+    <!--
+      The boot splash, styled inline for the same reason the favicon above is a
+      data URI: it has to be right on the very first paint, and a request would
+      arrive too late to matter.
+
+      `styles.css` cannot do this job. `main.tsx` imports it, so in development
+      the bundle injects it — and the bundle arriving is the end of the gap this
+      screen exists to cover. A rule living there would be correct in production
+      and an unstyled blob in development, which is the one arrangement nobody
+      notices is broken.
+
+      Hence colour literals rather than `--md-sys-color-*`: nothing has defined
+      those yet. They are `background` and `primary`. `styles.css` carries a note
+      beside them; nothing enforces it.
+    -->
+    <style>
+      /* Mirrors `styles.css`: one scheme, stated so a tablet set to dark does
+         not render the form controls behind this on a dark frame. */
+      :root {
+        color-scheme: light;
+      }
+
+      /* On `html`, not `body`: the canvas is painted from this, and the canvas
+         is what shows through an overscroll bounce and in whatever frames pass
+         before the parser reaches `#splash`. */
+      html {
+        background: #eef0f4;
+      }
+
+      #splash {
+        position: fixed;
+        inset: 0;
+        /* Above anything the app itself paints. */
+        z-index: 200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        /*
+         * Optically centred, not geometrically: a mark on the halfway line
+         * reads low, because the eye weights the top of the frame. With `inset`
+         * fixing the height, the padding insets the content box rather than
+         * growing it — and it does so without depending on the `box-sizing`
+         * rule that lives in `styles.css`. Smaller than a phone app would use,
+         * because a landscape tablet is short and the lift is proportional to
+         * the height, not to the mark.
+         */
+        padding-bottom: 6vh;
+        background: #eef0f4;
+        color: #00458f;
+      }
+
+      #splash .splash-mark {
+        /*
+         * Sized against the *height*, which is the short side of a landscape
+         * tablet and the one that varies least between the devices this runs
+         * on. `vw` would make the same mark twice as big on a 10-inch tablet
+         * held sideways as on the same tablet held upright.
+         */
+        width: clamp(72px, 14vh, 112px);
+        height: auto;
+        /*
+         * An entrance, and then — only if the boot is still going at 900ms — a
+         * slow pulse. Deliberately not a spinner: most launches are over before
+         * the pulse starts, and a spinner that is only ever seen when something
+         * is wrong teaches people to expect waiting.
+         */
+        animation:
+          pos-splash-in 260ms cubic-bezier(0.2, 0, 0, 1) both,
+          pos-splash-pulse 2400ms ease-in-out 900ms infinite;
+      }
+
+      @keyframes pos-splash-in {
+        from {
+          opacity: 0;
+          transform: scale(0.94);
+        }
+      }
+
+      @keyframes pos-splash-pulse {
+        50% {
+          transform: scale(1.03);
+        }
+      }
+
+      /* The mark simply appears. */
+      @media (prefers-reduced-motion: reduce) {
+        #splash .splash-mark {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Painted before a byte of the bundle has run — a module script is deferred
+      by definition, so the parser reaches this, paints, and only then executes
+      `main.tsx`. That gap used to be a blank page, and on a tablet being woken
+      at the start of a shift it is most of what opening the app feels like.
+      Offline gets it too: `sw.js` caches `/` as the shell, so this markup is
+      inside it.
+
+      A sibling of `#root`, not a child. Solid appends into its container rather
+      than emptying it, so a child would survive the mount and sit over the app
+      until something removed it — and it has to come down at a moment the app
+      chooses, which is what `platform.dismissSplash()` is for. As a sibling it
+      also keeps `#root.children.length` meaning "the app mounted" rather than
+      "the HTML has a div in it".
+
+      No app name on it, in any language. A wordmark's one hard requirement is
+      being in the reader's language, and the code that knows which — the
+      catalogue, keyed off the device language — is exactly what this is
+      covering for. `<html lang>` is still `en` here, so even the Burmese font
+      stack would not be picked.
+    -->
+    <div id="splash" aria-hidden="true">
+      <svg
+        class="splash-mark"
+        viewBox="0 0 96 96"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <!-- A receipt with a torn foot: the one object everybody in the
+             building already reads as "the till". -->
+        <path d="M26 16h44v62l-7.33-6-7.33 6-7.34-6-7.33 6-7.33-6-7.34 6Z" />
+        <path d="M37 36h22M37 48h22M37 60h14" />
+      </svg>
+    </div>
+
+    <script>
+      /*
+       * The splash is opaque and covers the viewport, so the one thing it must
+       * never do is outlive a boot that failed.
+       *
+       * `platform.dismissSplash()` runs from inside the app, which is no help
+       * at all when the app is what did not arrive: a bundle lost to a dropped
+       * connection just after a deploy, a parse error in a webview older than
+       * the build target, a throw during the first render.
+       *
+       * None of those leave anything worth showing. The point is only that a
+       * blank page is recoverable, because it looks broken and somebody reloads
+       * it, while a receipt sitting patiently on a coloured field looks like a
+       * till that is still thinking — and a waiter with a table waiting will
+       * give it a minute before asking for help.
+       */
+      (function () {
+        function down() {
+          var splash = document.getElementById('splash');
+          if (splash) splash.remove();
+        }
+        window.addEventListener(
+          'error',
+          function (event) {
+            // Two different events share this name. A resource that failed to
+            // load fires at the element and does not bubble, which is what the
+            // capture phase below is for; an uncaught throw fires at the window
+            // and has no element at all. Only the first kind needs filtering —
+            // an icon 404ing is not a reason to tear the screen down.
+            var tag = event.target && event.target.tagName;
+            if (!tag || tag === 'SCRIPT' || tag === 'LINK') down();
+          },
+          true,
+        );
+        window.setTimeout(down, 10000);
+      })();
+    </script>
+
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

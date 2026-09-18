@@ -1,0 +1,6 @@
+{
+  "apiUrl": "https://restaurant-pos-api.example.workers.dev",
+  "deviceToken": "paste the token from redeeming the printer device's claim link",
+  "printerHost": "192.168.1.50",
+  "printerPort": 9100
+}

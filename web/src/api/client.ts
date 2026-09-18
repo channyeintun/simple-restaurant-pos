@@ -20,13 +20,20 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 
-  /** True when the caller should send the user back to the invite screen. */
+  /** True when the caller should send the user back to the claim screen. */
   get isAuthError(): boolean {
     return this.status === 401;
   }
 }
 
-const TOKEN_KEY = 'token';
+/**
+ * Named for the cookie the Worker sets, `pos_token`, rather than for anything
+ * on this side. The two hold the same credential — the bearer token is what
+ * always works, the cookie is the same-origin convenience — and a tablet whose
+ * storage and cookie jar disagree about which one it is holding is a bug nobody
+ * can read from a console. One name, both places.
+ */
+const TOKEN_KEY = 'pos_token';
 
 let token: string | null = platform.storage.get(TOKEN_KEY);
 let unauthorizedHandler: (() => void) | null = null;
@@ -143,31 +150,3 @@ export const post = <T>(path: string, body?: unknown) => request<T>('POST', path
 export const put = <T>(path: string, body?: unknown) => request<T>('PUT', path, { body });
 export const patch = <T>(path: string, body?: unknown) => request<T>('PATCH', path, { body });
 export const del = <T>(path: string, body?: unknown) => request<T>('DELETE', path, { body });
-
-/**
- * Fetch a binary resource with the same credentials as everything else.
- *
- * Payment screenshots live behind an authorized route, and an `<img src>`
- * cannot send a bearer token — so they are pulled down as blobs and handed to
- * `platform.objectUrl` instead.
- */
-export async function getBlob(path: string, signal?: AbortSignal): Promise<Blob> {
-  const headers: Record<string, string> = {};
-  const sentWith = token;
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  const response = await fetch(`${platform.apiBaseUrl}${path}`, {
-    headers,
-    credentials: 'include',
-    signal,
-  });
-
-  if (!response.ok) {
-    if (response.status === 401 && token === sentWith) {
-      clearToken();
-      unauthorizedHandler?.();
-    }
-    throw new ApiError(response.status, 'fetch_failed', 'Could not load that image');
-  }
-  return response.blob();
-}

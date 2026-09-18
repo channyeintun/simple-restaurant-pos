@@ -1,0 +1,163 @@
+import {
+  type AppConfig,
+  type Identity,
+  type Me,
+  type StaffRole,
+  DEFAULT_CONFIG,
+  formatClock,
+  formatDateTime,
+  formatMoney,
+} from '@pos/shared';
+import { useQueryClient } from '@tanstack/solid-query';
+import type { Accessor } from 'solid-js';
+import { signOutStaff } from '../api/staff.js';
+import { queryKeys, useMe } from '../lib/queries.js';
+
+/**
+ * The session, as a screen wants to use it: who is standing at this tablet, and
+ * the two facts about this restaurant that decide how anything is written down.
+ *
+ * ## Why this does not create a context of its own
+ *
+ * There is nothing for one to hold. The session lives in the query cache under
+ * `queryKeys.me` and nowhere else — `App.tsx` reads it through `useMe()` to
+ * decide whether a page may render at all, and so does this. A context here
+ * would be a second copy of the truth kept in step by hand, and the whole
+ * reason `api/auth.ts` parses its responses instead of casting them is that
+ * this codebase does not trust two places to agree about a shape.
+ *
+ * So this module is not the store. It is the *interface* to it, and it earns
+ * its file by being three things the raw context is not:
+ *
+ *   1. **The only place money is formatted.** `formatMoney` takes the currency
+ *      as a parameter — deliberately, see `shared/src/config.ts` — which means
+ *      every call site would otherwise have to reach for the config and pass
+ *      it, and the first one that hard-codes `{ code: 'MMK', symbol: 'Ks' }`
+ *      because it is right today is a bug that survives a currency change.
+ *      `app.money(item.priceMinorSnapshot)` cannot be got wrong. Same argument
+ *      for the clock: the offset is a var on the Worker and a screen has no
+ *      business knowing a number for it.
+ *   2. **The one way an identity is adopted.** All three routes that change who
+ *      is on a tablet — claim, switch, sign out — answer with a fresh identity,
+ *      and every one of them has to land in the cache the shell reads. See
+ *      `adopt`.
+ *   3. **A narrower shape than the raw identity.** `staff()` is the signed-in
+ *      person as one object or null, rather than three fields that are all null
+ *      together and have to be checked one at a time.
+ *
+ * If the shell ever grows session state that is not the server's answer — a
+ * language the person picked, a pane they collapsed — this is where it goes,
+ * and it would want a context then. Until then the store is the cache, and the
+ * cache is where the fetch already put it.
+ */
+
+/** The signed-in person, when there is one. */
+export interface SignedInStaff {
+  id: string;
+  name: string;
+  role: StaffRole;
+}
+
+export interface AppValue {
+  /** Null on a tablet that has not been claimed; never null inside the routes. */
+  identity: Accessor<Identity | null>;
+  /** Null when the device is claimed but nobody has entered a PIN. */
+  staff: Accessor<SignedInStaff | null>;
+  config: Accessor<AppConfig>;
+  /** Integer minor units in, `12.500 Ks` out. The only way to write money. */
+  money(minor: number): string;
+  /** `2026-09-18 19:30`, in the restaurant's own offset. */
+  dateTime(instant: Date | string | number): string;
+  /** `19:30` — the same clock, when the date is already obvious from context. */
+  clock(instant: Date | string | number): string;
+  /** Take the identity a re-minting route just handed back. */
+  adopt(identity: Identity | null): void;
+  /** End this person's turn at the tablet, leaving the tablet claimed. */
+  signOut(): Promise<void>;
+}
+
+/**
+ * The session, from any component under the app shell.
+ *
+ * A hook rather than a provider, so it must be called during a component's
+ * setup — `useMe` and `useQueryClient` both read contexts, and a context read
+ * from inside an event handler or a promise callback is read from outside the
+ * tree that has the value. Call it once at the top of the component and keep
+ * the object; every field on it is an accessor or a function, so nothing goes
+ * stale by being held.
+ */
+export function useApp(): AppValue {
+  const session = useMe();
+  const queryClient = useQueryClient();
+
+  /*
+   * Until the bootstrap answers there is no identity and no config. The config
+   * falls back to `DEFAULT_CONFIG` rather than to null so that `money()` and
+   * `clock()` are total functions — a screen that renders a price for the one
+   * frame before `/auth/me` lands should show a slightly wrong currency at
+   * worst, never throw. The identity does not get the same treatment, because
+   * "nobody is signed in" is a real state the shell renders a screen for.
+   */
+  const identity = (): Identity | null => session.data?.identity ?? null;
+  const config = (): AppConfig => session.data?.config ?? DEFAULT_CONFIG;
+
+  const staff = (): SignedInStaff | null => {
+    const current = identity();
+    /*
+     * The three staff fields move together — the Worker mints them from one
+     * row — so one check answers for all three. It is `staffId` rather than
+     * `role` because that is the field the middleware guards on: `require_staff`
+     * is what stands between this tablet and sending a round to the kitchen,
+     * and it reads the staff claim.
+     */
+    if (!current?.staffId || !current.staffName || !current.role) return null;
+    return { id: current.staffId, name: current.staffName, role: current.role };
+  };
+
+  /**
+   * Write a freshly minted identity into the one place that holds one.
+   *
+   * That place is the query cache, which is what decides which screen renders:
+   * the shell reads the same entry to tell a claimed tablet from a signed-in
+   * one. Because there is exactly one copy, there is no second write to forget
+   * — which is the whole argument for keeping the session here rather than in a
+   * signal beside it.
+   *
+   * `setQueryData` rather than an invalidation, for the reason `queryKeys.me`
+   * spells out: the response that produced this identity has already told us
+   * everything a refetch would, and the person standing at the tablet is
+   * waiting to start a shift rather than to watch a second request. The config
+   * is carried over untouched because nothing but a deploy can change it, and
+   * an entry that has never been fetched is left alone — writing a partial `Me`
+   * would hand the next reader an object with no currency in it.
+   */
+  const adopt = (next: Identity | null): void => {
+    queryClient.setQueryData<Me>(queryKeys.me, (previous) =>
+      previous && next ? { ...previous, identity: next } : previous,
+    );
+  };
+
+  return {
+    identity,
+    staff,
+    config,
+    money: (minor) => formatMoney(minor, config().currency),
+    dateTime: (instant) => formatDateTime(instant, config().tzOffsetMinutes),
+    clock: (instant) => formatClock(instant, config().tzOffsetMinutes),
+    adopt,
+    /*
+     * Signing a person out, not a device. The route answers with a token
+     * re-minted without the staff claim, which is still this tablet's
+     * credential — `api/staff.ts` installs it — so the shell drops to the PIN
+     * screen rather than to the gate.
+     *
+     * There is deliberately no device sign-out anywhere in the app. Un-claiming
+     * a tablet needs an admin with a fresh link to undo, and a control that can
+     * strand a till mid-service has no business sitting next to the one that
+     * ends a shift.
+     */
+    signOut: async () => {
+      adopt(await signOutStaff());
+    },
+  };
+}

@@ -1,0 +1,25 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    // The agent is the one workspace with no DOM anywhere in it: it is a node
+    // process on a PC in the restaurant. Leaving `dom` out of `lib` is what
+    // makes that a compile error rather than a crash at 8pm — `localStorage`
+    // and `window` type-check happily against the DOM lib and then do not
+    // exist.
+    "types": ["node"],
+    // Same reason as `shared/`: node's native type stripping resolves the real
+    // filename, so an import inside this package names `./foo.ts` and not
+    // `./foo.js`. Safe because nothing here is ever emitted — `npm start` runs
+    // the TypeScript directly.
+    "allowImportingTsExtensions": true,
+    // And because `npm start` is `node --experimental-strip-types`, the syntax
+    // in this package has to be the syntax node can *delete*. Enums, namespaces
+    // and constructor parameter properties are not: they generate code, so node
+    // rejects the file on sight with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX. This
+    // flag makes that a typecheck failure in CI rather than something the
+    // restaurant discovers when the tickets stop.
+    "erasableSyntaxOnly": true
+  },
+  "include": ["src/**/*.ts"]
+}

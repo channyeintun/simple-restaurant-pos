@@ -1,0 +1,555 @@
+/*
+ * Material Design 3 theme + the app shell.
+ *
+ * Two things make this stylesheet different from the one it is descended from,
+ * and both come from where the app runs. It runs on a tablet clipped to a stand
+ * or carried in one hand, in a dining room with the lights on and often a
+ * window behind it; and it is used by somebody who is doing something else at
+ * the same time — taking an order, counting change, watching a table. So:
+ *
+ *   * **Light, and only light.** There is deliberately no
+ *     `prefers-color-scheme: dark` block. A till has to look the same on every
+ *     tablet in the building, and the tablets are not all set up by the same
+ *     person; a waiter's device that switched to dark on a schedule would
+ *     change contrast in the middle of a service, and the dark end of any
+ *     palette is the end that fails in daylight. If a dark till is ever wanted
+ *     it should be a setting on the device, deliberately chosen, not a media
+ *     query the OS answers.
+ *   * **Everything is bigger.** Base type is 17px rather than 16, and nothing
+ *     you can press is under 48px, which is the size a thumb hits reliably
+ *     without looking. That is a token — `--pos-touch` — rather than a number
+ *     repeated down the file, because every later milestone adds controls and
+ *     the rule has to survive them.
+ *
+ * The colour scheme is a standard M3 tonal palette on a blue source. Material
+ * Web reads these `--md-sys-color-*` custom properties directly, so setting
+ * them here themes every component at once.
+ *
+ * Typography uses the system font stack rather than Roboto: a webfont request
+ * is latency on a first paint that a shift start does not need, and the
+ * restaurant's wifi is the only network these tablets have.
+ */
+
+:root {
+  /*
+   * Myanmar fonts are listed after the Latin system stack, not instead of it:
+   * the browser falls through per-character, so Latin text still uses the
+   * system face while Burmese picks up a Myanmar font. Named explicitly
+   * because several platforms ship one that is not their default UI font.
+   */
+  --md-ref-typeface-brand: system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Myanmar Sangam MN', 'Noto Sans Myanmar', 'Padauk', 'Myanmar Text', sans-serif;
+  --md-ref-typeface-plain: system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Myanmar Sangam MN', 'Noto Sans Myanmar', 'Padauk', 'Myanmar Text', sans-serif;
+  /*
+   * Money, and only money. Prices in a list have to line up so that a column
+   * of them can be read down rather than across, and a proportional face puts
+   * a 1 at half the width of a 0. The Myanmar faces are in the fall-through for
+   * the same reason as above — a bare `monospace` has no Burmese glyphs on most
+   * systems and renders tofu.
+   */
+  --pos-typeface-numeric: ui-monospace, SFMono-Regular, Menlo, 'Roboto Mono',
+    'Myanmar Sangam MN', 'Noto Sans Myanmar', 'Padauk', 'Myanmar Text', monospace;
+
+  /*
+   * One accent, and it is deliberately not green and not red.
+   *
+   * This app spends colour on exactly three meanings and they must never be
+   * confusable at a glance: green is *paid*, red is *the kitchen did not get
+   * it* — a void, or a printer that failed — and the accent is *press this*.
+   * A green primary would put "send to kitchen" in the same colour as a
+   * settled bill, which is the one mistake a cashier cannot afford to make in
+   * a hurry.
+   *
+   * `primary` and `background` are also written out by hand in `index.html`
+   * for the boot splash: that screen has to paint before this file exists, so
+   * it cannot read a custom property. Change either one here and change it
+   * there too — nothing enforces it.
+   */
+  --md-sys-color-primary: #00458f;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #d7e3ff;
+  --md-sys-color-on-primary-container: #001b3d;
+  --md-sys-color-secondary: #565f71;
+  --md-sys-color-on-secondary: #ffffff;
+  --md-sys-color-secondary-container: #dae2f9;
+  --md-sys-color-on-secondary-container: #131c2b;
+  --md-sys-color-tertiary: #006c4d;
+  --md-sys-color-on-tertiary: #ffffff;
+  --md-sys-color-tertiary-container: #8ff8c4;
+  --md-sys-color-on-tertiary-container: #002114;
+  --md-sys-color-error: #ba1a1a;
+  --md-sys-color-on-error: #ffffff;
+  --md-sys-color-error-container: #ffdad6;
+  --md-sys-color-on-error-container: #410002;
+
+  /*
+   * The canvas is a light neutral rather than white, so that white cards — a
+   * table tile, a product tile, a check — separate from it without a border or
+   * a shadow doing the work. Pure white everywhere is what makes a dense
+   * screen read as one undifferentiated sheet.
+   */
+  --md-sys-color-background: #eef0f4;
+  --md-sys-color-on-background: #101418;
+  --md-sys-color-surface: #ffffff;
+  --md-sys-color-on-surface: #101418;
+  --md-sys-color-surface-variant: #e0e2ec;
+  /*
+   * 8.9:1 on white. The usual M3 light value for this slot is much lighter and
+   * lands around 4.6:1, which passes a spec written for an office and fails a
+   * window at lunchtime — and this is the colour every secondary line on the
+   * screen uses, including the one under a table number.
+   */
+  --md-sys-color-on-surface-variant: #43474e;
+  --md-sys-color-outline: #73777f;
+  --md-sys-color-outline-variant: #c3c6cf;
+  --md-sys-color-surface-container-lowest: #ffffff;
+  --md-sys-color-surface-container-low: #f7f8fb;
+  --md-sys-color-surface-container: #f2f3f7;
+  --md-sys-color-surface-container-high: #ecedf1;
+  --md-sys-color-surface-container-highest: #e6e7eb;
+  --md-sys-color-inverse-surface: #2e3135;
+  --md-sys-color-inverse-on-surface: #f0f0f4;
+  --md-sys-color-inverse-primary: #abc7ff;
+
+  /*
+   * What a check is doing, as colour.
+   *
+   * Two semantic pairs rather than raw hexes at the call sites, so that the
+   * cashier's card, the waiter's table tile and the backoffice's daily total
+   * all say "open" and "paid" in the same two colours. Open is amber because
+   * it is a state that wants finishing; paid is the tertiary green, which is
+   * the only place in the app green appears.
+   */
+  --pos-open: #8a5000;
+  --pos-open-container: #ffddb0;
+  --pos-paid: var(--md-sys-color-tertiary);
+  --pos-paid-container: #b6f2d5;
+
+  /*
+   * The smallest thing anybody is allowed to have to press.
+   *
+   * 48px is the number every platform's guidance converges on for a target hit
+   * without looking, and every control in this app is at least that — including
+   * the `−` and `+` on a cart line, which is where the temptation to go smaller
+   * is strongest because there are two of them on every row.
+   *
+   * `--pos-touch-lg` is for the one button on a screen that ends the task:
+   * Send to kitchen, Take payment. Bigger because it is pressed with a thumb
+   * while looking somewhere else, and because nothing beside it should be
+   * easier to hit by accident.
+   */
+  --pos-touch: 48px;
+  --pos-touch-lg: 60px;
+
+  /*
+   * The waiter's grid, from the brief: a product tile is at least 100x100 with
+   * the name and the price on it and the whole tile tappable. Declared here
+   * rather than in the page that draws it because the tile is the unit the
+   * right-hand pane is measured in — how many fit across decides how wide the
+   * pane wants to be, which decides how much is left for the tables.
+   */
+  --pos-tile-min: 100px;
+  --pos-tile-gap: 10px;
+  /* A table in the grid carries a number, a state and a total, so it is taller
+     than a product tile is wide. */
+  --pos-table-tile: 128px;
+
+  /*
+   * The cart, which is on the screen at all times and never behind an icon.
+   *
+   * One row is a name, a note, a quantity stepper and a line total; the
+   * stepper is what sets the height, since it is two `--pos-touch` targets
+   * side by side and they may not be shrunk to fit. `--pos-cart-min-h` keeps
+   * three rows and the total visible before it starts to scroll — a cart that
+   * grows until it eats the product grid is a cart you cannot add to.
+   */
+  --pos-cart-row-h: 56px;
+  --pos-cart-min-h: calc(var(--pos-cart-row-h) * 3);
+
+  /* Big soft rectangles; fully round for anything pill-shaped. */
+  --pos-radius-card: 16px;
+  --pos-radius-row: 12px;
+  --pos-radius-pill: 999px;
+
+  /* The two gaps in the layout: between things in a list, and between panes. */
+  --pos-gap: 12px;
+  --pos-pane-gap: 16px;
+
+  /*
+   * A card lifts off the canvas by a hair, not by a drop shadow. The canvas is
+   * already darker than the card, so the shadow only has to stop the edge
+   * looking cut out.
+   */
+  --pos-shadow-card: 0 1px 2px rgb(16 20 24 / 8%), 0 1px 8px rgb(16 20 24 / 4%);
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--md-sys-color-background);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--md-ref-typeface-plain);
+  /*
+   * 17px, not 16. The tablet is at arm's length on a stand rather than a foot
+   * from somebody's face, and every size in the app is derived from this one,
+   * so the whole scale moves together.
+   */
+  font-size: 17px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  /* Stops iOS from zooming the page when a text field is focused. */
+  -webkit-text-size-adjust: 100%;
+  /*
+   * Pull-to-refresh is a disaster on a till. The waiter's screen scrolls a
+   * product grid with a thumb, and an overscroll at the top of it would throw
+   * away a cart that has not been sent yet. Nothing in this app is refreshed by
+   * dragging; the cashier has a live stream and the waiter fetches on open.
+   */
+  overscroll-behavior: none;
+}
+
+/*
+ * No grey flash under a tap, and no 300ms wait before one registers.
+ *
+ * `touch-action: manipulation` is the one that matters: without it the browser
+ * holds every tap for a third of a second in case it turns into a double-tap
+ * zoom, which on a screen where the whole job is tapping tiles is the
+ * difference between an app that feels like a till and one that feels like a
+ * website.
+ */
+body,
+button,
+[role='button'] {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/*
+ * Dragging across a grid of tiles selects their text on a touch screen, and on
+ * a long press it puts up a copy/paste bubble over the thing that was being
+ * pressed. Neither is ever wanted on a control, so selection is off by default
+ * and switched back on for the two places somebody may genuinely need to copy:
+ * anything they typed, and anything marked `.selectable` — a check id being
+ * read out to somebody on the phone, say.
+ */
+.app {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea,
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ------------------------------------------------------------------ shell */
+
+.app {
+  /*
+   * `dvh` is right here, and the fallback matters.
+   *
+   * `vh` means `lvh` — the viewport with the browser's chrome retracted — so a
+   * short screen ends up taller than what can actually be seen, and the cart
+   * along the bottom starts below the fold. `svh` has the opposite fault: once
+   * the chrome hides, the shell stops short of the real bottom and the cart
+   * floats above a strip of background.
+   *
+   * The usual objection to `dvh` — that it relayouts while the chrome animates
+   * — does not apply to a `min-height`. On a long screen the content already
+   * exceeds it, so changing it costs nothing; on a screen short enough for it
+   * to bind, there is nothing to scroll and the chrome never moves.
+   *
+   * Written twice, the `vh` first, so an engine without the newer unit keeps
+   * something sane rather than dropping the declaration.
+   */
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  /*
+   * Full width, unlike the phone app this is descended from, which capped
+   * itself at 560px and centred. Here the width is the point: two panes side
+   * by side on a landscape tablet, and a grid that fits more tiles when the
+   * device is bigger.
+   */
+  width: 100%;
+  /* The home indicator and the rounded corners of a tablet in a case. Only the
+     shell pays for them, so a pane inside it can still run edge to edge. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* ---------------------------------------------------------------- screens */
+
+/*
+ * A single-column screen that stands on its own: the "this tablet has not been
+ * set up" gate, the claim screen, the PIN screen. All three are one short
+ * column of text and controls with nothing else on the display, and all three
+ * are read by somebody standing up, so the column is centred in both
+ * directions rather than pinned to the top-left of a very wide tablet.
+ */
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: var(--pos-gap);
+  padding: 24px max(24px, 6vw);
+  text-align: center;
+}
+
+/* The column itself, so a 1200px-wide tablet does not set 90 characters to a
+   line. */
+.screen > * {
+  width: 100%;
+  max-width: 34rem;
+}
+
+.screen-eyebrow {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.screen-title {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.screen-body {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* The default surface: a table tile, a product tile, a check, a panel. */
+.card {
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  border-radius: var(--pos-radius-card);
+  box-shadow: var(--pos-shadow-card);
+  padding: 16px;
+}
+
+/*
+ * The one layout this app repeats: a grid of equal, tappable things.
+ *
+ * The PIN keypad, the tables, the product tiles and the open checks are all
+ * the same shape — as many across as fit, each at least a thumb wide, the same
+ * gap everywhere. `auto-fill` rather than a column count because the same page
+ * runs on a 10-inch tablet in a stand and a 13-inch one in somebody's hands.
+ *
+ * A caller that needs a different unit sets `--pos-grid-min` on the element
+ * rather than writing its own grid: the keypad wants three fat columns, the
+ * product grid wants the 100px minimum from the brief.
+ */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--pos-grid-min, var(--pos-tile-min)), 1fr));
+  gap: var(--pos-tile-gap);
+}
+
+/* Money, wherever it is written. Tabular figures so a column lines up, and
+   never a smaller size than the words beside it. */
+.money {
+  font-family: var(--pos-typeface-numeric);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/*
+ * The one banner the cashier must not be able to miss: a print job failed and
+ * the kitchen never got the round. Error colours rather than a tint, because
+ * this is the state where somebody has to walk to the kitchen.
+ */
+.error-banner {
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+  border-radius: var(--pos-radius-row);
+  padding: 14px 16px;
+  font-size: 1rem;
+}
+
+/* --------------------------------------------------------------- controls */
+
+/*
+ * Every Material button in the app is at least a thumb tall.
+ *
+ * Set on the tokens rather than by overriding the components' internals: these
+ * are the properties `@material/web` publishes for exactly this, and a height
+ * pushed onto the host element instead would leave the ripple and the state
+ * layer at the old size, so the thing that lights up under a finger would be
+ * smaller than the thing that was pressed.
+ */
+md-filled-button,
+md-filled-tonal-button,
+md-outlined-button,
+md-text-button,
+md-elevated-button {
+  --md-filled-button-container-height: var(--pos-touch);
+  --md-filled-tonal-button-container-height: var(--pos-touch);
+  --md-outlined-button-container-height: var(--pos-touch);
+  --md-text-button-container-height: var(--pos-touch);
+  --md-elevated-button-container-height: var(--pos-touch);
+  --md-filled-button-label-text-size: 1rem;
+  --md-filled-tonal-button-label-text-size: 1rem;
+  --md-outlined-button-label-text-size: 1rem;
+  --md-text-button-label-text-size: 1rem;
+  --md-elevated-button-label-text-size: 1rem;
+}
+
+md-icon-button,
+md-filled-icon-button,
+md-filled-tonal-icon-button,
+md-outlined-icon-button {
+  --md-icon-button-state-layer-height: var(--pos-touch);
+  --md-icon-button-state-layer-width: var(--pos-touch);
+  --md-icon-button-icon-size: 26px;
+}
+
+/*
+ * The shell's own button, and the only one in the app that is not a Material
+ * component.
+ *
+ * The shell renders before any page does, and the one action it ever offers is
+ * the retry on a boot that could not reach the Worker. Importing
+ * `@material/web/button/filled-button.js` from here to draw it would register a
+ * custom element on every launch for a control that almost nobody ever sees;
+ * pages import the Material components they use, and this one stays plain.
+ */
+.button {
+  min-height: var(--pos-touch);
+  padding: 0 28px;
+  border: 0;
+  border-radius: var(--pos-radius-pill);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/*
+ * The app's own buttons — the ones that are a tile rather than a Material
+ * component, because the whole tile is the target and a button inside it would
+ * mean two things to press.
+ */
+.tile {
+  min-height: var(--pos-touch);
+  border: 0;
+  border-radius: var(--pos-radius-row);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: var(--pos-shadow-card);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 90ms ease,
+    background-color 90ms ease;
+}
+
+/*
+ * A pressed state that is visible on a tile the finger is currently covering.
+ *
+ * Hover is not a state this app has — nothing here is ever used with a mouse
+ * during service — so the whole affordance budget goes on `:active`, and it
+ * moves the tile rather than only tinting it, because the tint is under the
+ * hand that caused it.
+ */
+.tile:active {
+  transform: scale(0.98);
+  background: var(--md-sys-color-surface-container-high);
+}
+
+/* The tint still lands; only the movement goes. */
+@media (prefers-reduced-motion: reduce) {
+  .tile {
+    transition: none;
+  }
+
+  .tile:active {
+    transform: none;
+  }
+}
+
+/*
+ * Focus is for the keyboard, and the keyboard is the backoffice: a manager
+ * typing a product list on a laptop tabs through it. `:focus-visible` keeps
+ * the ring off every tile a waiter taps.
+ */
+:focus-visible {
+  outline: 3px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+/* ----------------------------------------------------------------- a11y */
+
+/*
+ * Visible to a screen reader and to nothing else.
+ *
+ * `display: none` and `visibility: hidden` would both be simpler and both take
+ * the element out of the accessibility tree, which is the one thing a live
+ * region must not do. Clipping to a pixel is the old trick that keeps it in.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------------------------------------------------------------- Burmese */
+
+/*
+ * Burmese stacks marks above and below the baseline, so a line height set for
+ * Latin clips them against the line above. The catalogue is switched per
+ * device, not per string, so this hangs off `<html lang>` and applies to the
+ * whole document at once.
+ */
+:lang(my) {
+  line-height: 1.75;
+  letter-spacing: normal;
+}
+
+/* The language switcher, on the PIN pad and the unclaimed-device screen.
+   Centred on its own line: it is the last thing on both screens and the least
+   urgent thing on either, so it sits under the content rather than competing
+   with it. */
+.language-toggle {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}

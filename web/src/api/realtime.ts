@@ -1,4 +1,4 @@
-import { type RealtimeEvent, parseWireEvent, wireSystemEventSchema } from '@futsal/shared';
+import { type RealtimeEvent, parseWireEvent, wireSystemEventSchema } from '@pos/shared';
 import { platform } from '../platform/index.js';
 import type { EventStream } from '../platform/index.js';
 import { post } from './client.js';
@@ -6,19 +6,47 @@ import { post } from './client.js';
 /**
  * Live updates, with a deliberate cost model.
  *
- * The server's SSE keepalive costs one Upstash command every 10 seconds per
- * open connection — 360 an hour. Left unmanaged, one forgotten browser tab
- * would spend half the monthly free allowance on pinging nobody. So this client
- * treats an open stream as something to be given up quickly:
+ * `@upstash/realtime`'s SSE handler publishes a keepalive every 10 seconds per
+ * open connection — 360 Redis commands per connection-hour, fixed by
+ * `KEEPALIVE_INTERVAL_MS` in `api/src/realtime.rs` and not configurable from
+ * out here. Upstash's free tier is 500,000 commands a month, so an open stream
+ * is the most expensive thing this app can do and everything below is
+ * arithmetic against that one number.
+ *
+ * Which is why **only the cashier page ever calls this.** Waiter tablets fetch
+ * a table's check when the table is opened — a waiter is looking at one table
+ * at a time and has just caused the change they are looking at — and the
+ * printer agent polls for its jobs. One subscriber, one channel, `restaurant`.
+ * A twelve-hour service with the cashier's stream open throughout costs 4,320
+ * commands, roughly 130,000 a month, and that is the largest line in the
+ * budget CLAUDE.md sets out.
+ *
+ * Within that, the rules this client follows:
  *
  *   * **visible and recently used** → SSE, updates arrive instantly.
- *   * **visible but idle for 5 minutes** → close the stream, poll every 30s.
+ *   * **visible but idle for four hours** → close the stream, poll every 5s.
  *     Polling costs Worker requests (cheap, 100k/day) and zero Redis commands.
  *   * **backgrounded** → nothing at all; refresh once on return.
  *
+ * Two of those numbers are not the reference's, and the difference between
+ * them is the difference between the two apps. The poll is 5 seconds rather
+ * than 30 because the thing waiting on it is not somebody glancing at a
+ * fixture list — it is a cashier holding a card machine with a customer in
+ * front of them, and half a minute of that is an apology. The idle timeout is
+ * four hours rather than five minutes because the cashier's tablet sits
+ * untouched on the counter through a quiet afternoon and has to be live the
+ * moment somebody walks up to it; 1,440 commands is what that costs and it is
+ * cheaper than making them reconnect.
+ *
+ * Page-hidden still closes the stream immediately, and that is the rule that
+ * actually protects the budget. A tablet that gets locked, or switched away
+ * from to answer the phone, stops costing anything within the second — which
+ * is most of the hours in a day, and is why the generous idle timeout above is
+ * affordable at all.
+ *
  * The same fallback covers failure: if the stream errors, or the server has no
  * Upstash credentials configured, the caller keeps getting `onRefresh` on a
- * 30-second cadence and the UI simply updates a little later.
+ * 5-second cadence and the screen simply updates a little later.
  */
 
 export type ConnectionState = 'connecting' | 'live' | 'polling' | 'idle';
@@ -36,9 +64,9 @@ export interface LiveConnection {
   close(): void;
 }
 
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 5_000;
 /** How long without interaction before an open stream is not worth its cost. */
-const IDLE_TIMEOUT_MS = 5 * 60_000;
+const IDLE_TIMEOUT_MS = 4 * 60 * 60_000;
 /** While polling, occasionally try to get back to a live stream. */
 const RETRY_LIVE_INTERVAL_MS = 2 * 60_000;
 const MAX_STREAM_RETRIES = 3;
@@ -222,8 +250,9 @@ export function connectLive(options: LiveOptions): LiveConnection {
   function onIdleReached() {
     if (closed || !platform.visibility.isVisible()) return;
     if (Date.now() - lastInteraction < IDLE_TIMEOUT_MS) return;
-    // Still watching, just not touching. Polling is two Worker requests a
-    // minute and no Redis commands at all.
+    // Still watching, just not touching. Polling is twelve Worker requests a
+    // minute and no Redis commands at all, which against 100,000 requests a day
+    // is not a number worth thinking about.
     closeStream();
     startPolling();
   }
@@ -267,8 +296,8 @@ export function connectLive(options: LiveOptions): LiveConnection {
  *
  * Two things were wrong without this. A component that unmounts on navigation
  * closed its stream and the next screen opened a fresh one, so the status
- * indicator flashed "connecting" on *every* trip back to the home screen even
- * though nothing about the connection had actually changed. And on the free
+ * indicator flashed "connecting" on *every* trip back to the open-checks list
+ * even though nothing about the connection had actually changed. And on the free
  * tier that reconnect is not free — an SSE stream costs a subscribe and a
  * ticket round-trip each time, paid on every navigation rather than once.
  *
