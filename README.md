@@ -423,6 +423,105 @@ fatal credential problem, which restarting will not fix but which is harmless to
 retry every ten seconds while somebody reads the log, and a `SIGTERM` from you,
 which systemd does not treat as a failure anyway.
 
+#### On Windows
+
+It runs on Windows unchanged — nothing in the agent is POSIX-specific, and
+`pathToFileURL` is already used for the entry-point check precisely because of
+drive letters. What changes is the shell and the supervisor, and there are four
+traps, every one of which produces an error that does not name its own cause.
+
+**Node.** `winget install OpenJS.NodeJS` or the installer from nodejs.org, then
+**open a new terminal** — the one you installed from still has the old `PATH`
+and will say `node is not recognized`, which is where most people stop.
+
+Node 22.6+ is the floor. From **22.18** type stripping is on by default, so the
+`--experimental-strip-types` flag below is unnecessary there — it is kept in
+these instructions because it is harmless (it survives as an alias) and it is
+the one command that works on every version from 22.6 up.
+
+**Getting the file.** In PowerShell, `curl` is an alias for `Invoke-WebRequest`,
+so `curl -O <url>` does not download anything — `-O` is ambiguous between
+`-OutFile`, `-OutVariable` and `-OutBuffer`, and it fails at argument binding
+with a message that never mentions curl. It *works* in `cmd.exe` and in
+PowerShell 7, which is how the instruction survives being tested. Write the
+extension:
+
+```powershell
+mkdir C:\pos-printer; cd C:\pos-printer
+curl.exe -O https://raw.githubusercontent.com/channyeintun/simple-restaurant-pos/main/agent/src/index.ts
+```
+
+**The config.** Write it with Notepad and *Save as → UTF-8*, or with
+`Set-Content`. Do **not** use `>` or bare `Out-File`: Windows PowerShell 5.1 —
+still the default `powershell` — writes UTF-16LE, which `readFile(…, 'utf8')`
+reads as mojibake. A UTF-8 byte-order mark is handled, because `loadConfig`
+strips one; that was a three-byte fix against a failure that reports an
+"unexpected token" for a character invisible in Notepad.
+
+**Running it — pass the config path absolutely.** The agent resolves
+`agent.config.json` against the working directory, and a scheduled task with
+"Start in" blank runs in `C:\Windows\System32`. It then exits 2, and Task
+Scheduler shows `0x2`, which Windows documents as "the system cannot find the
+file specified" — true, and about a file nobody mentioned. Naming the config on
+the command line sidesteps the whole thing:
+
+```powershell
+node --experimental-strip-types C:\pos-printer\index.ts C:\pos-printer\agent.config.json
+```
+
+Run that by hand once and confirm you see the four `[agent]` startup lines
+before going any further.
+
+**Keeping it running.** There is no systemd. Task Scheduler is the built-in
+answer, with two caveats that matter more than the setup:
+
+*Its "restart on failure" is not `Restart=always`.* The interval has a hard
+minimum of one minute and the count is a byte, so it cannot mean "forever, every
+ten seconds". Put the loop in a wrapper instead, which also solves the other
+problem — Task Scheduler discards stdout, so the agent's log goes nowhere unless
+you redirect it. Save this as `C:\pos-printer\run-agent.cmd`:
+
+```bat
+@echo off
+:loop
+node --experimental-strip-types C:\pos-printer\index.ts C:\pos-printer\agent.config.json >> C:\pos-printer\agent.log 2>&1
+timeout /t 10 /nobreak > nul
+goto loop
+```
+
+*And it kills long-running tasks after three days.* "Stop the task if it runs
+longer than: 3 days" is **ticked by default**, there is no `schtasks.exe`
+parameter for it, and a POS installed on Monday goes quiet on Thursday lunchtime
+with nobody connecting the two. Register the task from PowerShell as
+Administrator, which lets you set it:
+
+```powershell
+$action  = New-ScheduledTaskAction -Execute 'C:\pos-printer\run-agent.cmd'
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$set     = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
+             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName 'POS printer agent' -Action $action -Trigger $trigger `
+  -Settings $set -User 'SYSTEM' -RunLevel Highest
+```
+
+Then open Task Scheduler, find the task, and **confirm on the Settings tab that
+"Stop the task if it runs longer than" is unticked**. It is the one setting that
+fails silently and days later.
+
+Start it without rebooting with `Start-ScheduledTask -TaskName 'POS printer
+agent'`, and read the log with `Get-Content C:\pos-printer\agent.log -Wait`.
+
+**What you lose, and why it does not matter.** Windows never delivers `SIGTERM`
+— Node's documentation says so outright — and Task Scheduler terminates the
+process rather than asking, so the agent's "stopping, anything unprinted stays
+queued" line never prints there. That costs the log line and nothing else: a job
+killed mid-write was never acked, so it is still `pending` and prints again on
+the next poll. A duplicate ticket is the trade this design already made.
+
+**Firewall.** Nothing to configure. The agent listens on nothing; it makes only
+outbound connections — HTTPS to the Worker and TCP 9100 to the printer — and
+Windows Defender Firewall blocks inbound by default only.
+
 #### Checking it without a printer
 
 The printing path can be exercised with any TCP listener, which is worth doing

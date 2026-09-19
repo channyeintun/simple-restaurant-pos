@@ -212,7 +212,23 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text) as unknown;
+    /*
+     * Strip a leading byte-order mark before parsing.
+     *
+     * This exists entirely for Windows, and it turns the single most
+     * undebuggable failure in the whole install into a non-event. Windows
+     * PowerShell 5.1 — still the default `powershell` on every Windows box —
+     * writes UTF-16LE from `>` and `Out-File`, and writes UTF-8 **with a BOM**
+     * when told `-Encoding UTF8`. `readFile(…, 'utf8')` does not strip it and
+     * `JSON.parse` throws on it, so somebody who wrote this file the obvious
+     * way gets:
+     *
+     *   is not valid JSON: Unexpected token '', "{  "apiU"... is not valid JSON
+     *
+     * about a character that is invisible in Notepad, in a file that looks
+     * perfect. Three bytes of defence beats any amount of documentation.
+     */
+    parsed = JSON.parse(text.replace(/^\uFEFF/, '')) as unknown;
   } catch (error) {
     // JSON's own message ("Unexpected token } in JSON at position 214") is
     // more use than anything this file could say instead: it names the
@@ -791,15 +807,32 @@ async function main(): Promise<void> {
   /*
    * Stop politely.
    *
-   * `SIGTERM` is what a supervisor sends on `systemctl stop` and what Docker
-   * sends on `docker stop`, and the useful thing to do with it is finish the
-   * ticket currently being written and then go. There is nothing to flush and
-   * no state to save — an unacked job stays `pending`, which is the whole
-   * design — so this is really just a log line that distinguishes "somebody
-   * stopped it" from "it fell over", in a log somebody will read tomorrow
-   * morning wondering why the kitchen went quiet.
+   * There is nothing to flush and no state to save — an unacked job stays
+   * `pending`, which is the whole design — so all of this is really one log
+   * line distinguishing "somebody stopped it" from "it fell over", in a log
+   * read tomorrow morning by somebody wondering why the kitchen went quiet.
+   *
+   * Four signals, because the two platforms this runs on deliver disjoint
+   * sets and each happily *listens* for the other's:
+   *
+   *   * `SIGTERM` is what `systemctl stop` and `docker stop` send. Node's
+   *     documentation is blunt that it is **never delivered on Windows** — it
+   *     "can be listened on" and that is all — so on a back-office PC this
+   *     registration is deliberate dead weight rather than an oversight.
+   *   * `SIGINT` is Ctrl+C, and is the one thing both platforms agree on.
+   *   * `SIGBREAK` is Ctrl+Break, and exists only on Windows.
+   *   * `SIGHUP` is the console window being closed with the X button, which
+   *     is the realistic "stop it" gesture on a Windows box — and the one
+   *     worth catching, because Windows then terminates the process about ten
+   *     seconds later whatever we do.
+   *
+   * None of them fires under Windows Task Scheduler, which terminates the
+   * process outright rather than asking. That costs the log line and nothing
+   * else, for the reason above: a job killed mid-write was never acked, so it
+   * is still `pending` and prints again on the next poll. The worst case is a
+   * duplicate ticket, which is the trade this whole design already made.
    */
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as const) {
     process.on(signal, () => {
       console.log(`[agent] ${signal} — stopping. Anything unprinted stays queued.`);
       process.exit(0);
