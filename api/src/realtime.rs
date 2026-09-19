@@ -508,27 +508,43 @@ async fn run_subscription(
         return;
     }
 
-    let Some(body) = response.body() else { return };
+    let Some(body) = response.body() else {
+        return on_error(&stream, "the subscription response had no body");
+    };
     let reader: web_sys::ReadableStreamDefaultReader = body.get_reader().unchecked_into();
 
     // The REST client buffers the decoded text and splits on newlines; a line
     // break is never part of a multi-byte sequence, so buffering the bytes and
     // splitting on `\n` is the same thing without a streaming decoder.
+    //
+    // Every way out of this loop is a failure, and every one of them has to say
+    // so. The subscription is the second hop — client to Worker to Redis — and
+    // only the first hop is the client's to watch. If this task ends quietly the
+    // response body stays open, the browser's `EventSource` stays happy, and the
+    // cashier's indicator goes on saying Live while nothing will ever arrive on
+    // it again; the next time the tablet learns anything is the stuck-queue
+    // check, minutes later, if a print job happens to be waiting. Reporting it
+    // costs one frame and the client already knows what to do with one — it
+    // closes the stream and falls back to the 5 s poll, which is degraded but
+    // honest.
     let mut buffer: Vec<u8> = Vec::new();
-    loop {
+    let reason = loop {
         let result = match JsFuture::from(reader.read()).await {
             Ok(result) => result,
-            Err(_) => break,
+            Err(_) => break "the subscription stream could not be read",
         };
         let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
             .ok()
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         if done {
-            break;
+            // Redis hung up on us. Ordinary at the end of a long service, and
+            // indistinguishable here from a network partition upstream — either
+            // way this Worker has stopped being a relay.
+            break "Redis closed the subscription";
         }
         let Ok(value) = js_sys::Reflect::get(&result, &JsValue::from_str("value")) else {
-            break;
+            break "the subscription stream could not be read";
         };
         buffer.extend_from_slice(&Uint8Array::new(&value).to_vec());
 
@@ -539,7 +555,7 @@ async fn run_subscription(
             None => buffer.len(),
         };
         if carried > MAX_BUFFER_SIZE {
-            break;
+            break "a subscription line grew past the buffer";
         }
 
         while let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
@@ -549,8 +565,14 @@ async fn run_subscription(
                 handle_message(&context, &stream, data);
             }
         }
-    }
+    };
     let _ = reader.cancel();
+
+    // Except when the client is the one who left. An abort tears this task down
+    // mid-`read`, and there is nobody on the other end to tell.
+    if !signal.aborted() {
+        on_error(&stream, reason);
+    }
 }
 
 /// `Subscriber.handleMessage` — split `type,channel,payload` on the first two
