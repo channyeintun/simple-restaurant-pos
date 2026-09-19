@@ -12,11 +12,12 @@ import {
   ConfirmButton,
   Dialog,
   ErrorBanner,
+  PaneHead,
   Spinner,
   TextField,
 } from '../../components/ui.js';
 import { createNow } from '../../lib/clock.js';
-import { queryKeys, useCategories, useCheck, useProducts, useTableCheck } from '../../lib/queries.js';
+import { queryKeys, useCategories, useCheck, useProducts, useTableCheck, useTables } from '../../lib/queries.js';
 import { useApp } from '../../state/app.js';
 import {
   type Slot,
@@ -62,6 +63,8 @@ import { useLocale } from '../../state/locale.js';
  * confirmation that says the kitchen may already have it, because that is the
  * one thing the person pressing it needs to know.
  */
+const ORDER_PANE_TITLE_ID = 'waiter-order-pane-title';
+
 export function OrderPane() {
   const { m } = useLocale();
   const app = useApp();
@@ -112,6 +115,39 @@ export function OrderPane() {
   const draft = () => draftFor(slot());
   const pending = () => draft().pending;
 
+  /* ------------------------------------------------------------- the name */
+
+  /**
+   * What this pane is about, in the fewest words that are true.
+   *
+   * Three sources because there are three ways to be here and they do not all
+   * have the same thing to hand. A table with a check open gets its name off
+   * the check, which is already loaded; a table with no check yet has no check
+   * to read, so the floor is consulted — `useTables` is cached for five
+   * minutes and every screen in this tree already holds it, so this is a cache
+   * hit rather than a request. A takeaway has no table at all and says so.
+   *
+   * The fallback is the word "Order" rather than an empty string. An empty
+   * heading is worse than a vague one: it is what `aria-labelledby` would then
+   * be pointing at, and a pane labelled by nothing is a pane a screen reader
+   * announces as nothing at all.
+   */
+  const tables = useTables();
+  const paneTitle = createMemo(() => {
+    if (slot().kind === 'takeaway') return m().waiter.takeaway;
+    // A check that has loaded already knows: a null `tableName` is what a
+    // counter sale looks like on the wire, which is the same reading the
+    // cashier's check view takes of the same field.
+    const current = check();
+    if (current) return current.tableName ?? m().waiter.takeaway;
+    const tableId = params.tableId;
+    if (tableId) {
+      const match = (tables.data ?? []).find((table) => table.id === tableId);
+      if (match) return match.name;
+    }
+    return m().waiter.order;
+  });
+
   /* ------------------------------------------------------------ the menu */
 
   const categories = useCategories();
@@ -153,8 +189,25 @@ export function OrderPane() {
 
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  /** True once a send has gone out and not come back with an answer. */
-  const [unconfirmed, setUnconfirmed] = createSignal(false);
+  /**
+   * True once a send has gone out and not come back with an answer.
+   *
+   * Seeded from the draft rather than from `false`, and re-seeded whenever the
+   * slot changes, because this screen can now be left. A pane head with a way
+   * out means a waiter can walk away from an unconfirmed send and come back to
+   * it — and a bare `createSignal(false)` would have lost the banner on the
+   * way, leaving the frozen cart with no explanation and the Send button
+   * reading "Send to kitchen" for a round that may already be cooking.
+   *
+   * The draft is where the truth was all along: `beginSend` puts the client
+   * key on it and only a confirmed send or an explicit discard takes it off,
+   * and it is in this tablet's storage, so it survives the unmount that the
+   * signal does not.
+   */
+  const [unconfirmed, setUnconfirmed] = createSignal(draftFor(slot()).pending !== null);
+  createEffect(
+    on(slot, (current) => setUnconfirmed(draftFor(current).pending !== null), { defer: true }),
+  );
 
   const send = async () => {
     const current = slot();
@@ -189,7 +242,20 @@ export function OrderPane() {
       // again to add a drink and open a second bill for one customer.
       if (current.kind === 'takeaway') {
         adoptCheckSlot(detail.id);
-        navigate(`/waiter/check/${detail.id}`, { replace: true });
+        /*
+         * Only if the waiter is still here.
+         *
+         * `useNavigate`'s navigator belongs to the router, not to this
+         * component, and Solid does not cancel an async continuation when a
+         * component goes away — so without this guard, walking out of a
+         * takeaway mid-send drags the waiter back into the pane they just
+         * left, seconds later, with no idea why. Everything above this line
+         * still runs either way: the draft and the cache should settle whether
+         * or not anybody is looking at them.
+         */
+        if (slot().kind === 'takeaway') {
+          navigate(`/waiter/check/${detail.id}`, { replace: true });
+        }
       }
     } catch (thrown) {
       /*
@@ -286,6 +352,7 @@ export function OrderPane() {
   return (
     <section
       class="card"
+      aria-labelledby={ORDER_PANE_TITLE_ID}
       style={{
         flex: '3 1 22rem',
         display: 'flex',
@@ -294,6 +361,28 @@ export function OrderPane() {
         'min-height': '0',
       }}
     >
+      {/*
+        The way out, and the answer to "which table is this".
+
+        Both were missing, and the second is the one that could cost money: the
+        brief forbids a confirmation on Send, so the moment the tables grid is
+        not on screen — which is the whole stacked layout — a waiter taps Send
+        with nothing in front of them naming the destination.
+
+        `navigate` rather than the history back the tablet does not have. An
+        installed app in standalone mode has no browser chrome, and iPadOS has
+        no system back gesture either, so going back has to be something this
+        screen draws. Going to `/waiter` is also the honest thing rather than
+        the convenient one: a waiter may have arrived here from another table,
+        from a reload, or from a link, and stepping back through that history
+        would land them somewhere different each time.
+      */}
+      <PaneHead
+        backLabel={m().waiter.backToTables}
+        onBack={() => navigate('/waiter')}
+        title={paneTitle()}
+        titleId={ORDER_PANE_TITLE_ID}
+      />
       {/* What has already gone to the kitchen. Collapses to a single total line
           once the cart has something in it, so the thing being built is what is
           on screen — but it never disappears, because a waiter adding a second
@@ -452,7 +541,7 @@ export function OrderPane() {
           </div>
 
           <div style={{ display: 'flex', 'align-items': 'center', gap: '4px' }}>
-            <Show when={pending() && unconfirmed()}>
+            <Show when={pending() && !busy()}>
               <ConfirmButton
                 headline={m().waiter.discardHeadline}
                 body={m().waiter.discardBody}
@@ -466,7 +555,24 @@ export function OrderPane() {
               </ConfirmButton>
             </Show>
 
-            <Show when={draft().lines.length > 0 && !unconfirmed()}>
+            {/*
+              Gated on the **draft**, not on the banner.
+
+              `unconfirmed()` is this component's memory of an unanswered send;
+              `pending()` is the client key sitting on the draft in storage,
+              which is the thing that actually decides what the next Send
+              means. The two agree until somebody leaves the pane and comes
+              back, and the gap between them was a way to send the wrong food:
+              clear the cart, tap in something different, press Send, and the
+              key from the *first* order goes out with it — so the Worker
+              recognises the repeat and cheerfully answers with the round it
+              already has, while the new items are never cooked and nothing on
+              screen says so.
+
+              Reading the persisted fact closes that, and it closes it whether
+              or not the banner survived the trip.
+            */}
+            <Show when={draft().lines.length > 0 && !pending()}>
               <ConfirmButton
                 headline={m().waiter.clearHeadline}
                 body={m().waiter.clearBody}

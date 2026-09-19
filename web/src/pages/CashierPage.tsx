@@ -1,12 +1,12 @@
 import { type CheckSummary, type PrintJobView, RESTAURANT_CHANNEL } from '@pos/shared';
 import type { RouteSectionProps } from '@solidjs/router';
 import { useQueryClient } from '@tanstack/solid-query';
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { retryPrintJob } from '../api/orders.js';
 import { Button, StaffBar } from '../components/ui.js';
 import { applyBoardEvent, boardNeedsRefetch } from '../lib/board.js';
 import { createLive } from '../lib/live.js';
-import { queryKeys, usePrintJobs, useStuckQueue, useTables } from '../lib/queries.js';
+import { queryKeys, useOpenChecks, usePrintJobs, useStuckQueue, useTables } from '../lib/queries.js';
 import { platform } from '../platform/index.js';
 import { useApp } from '../state/app.js';
 import { useLocale } from '../state/locale.js';
@@ -88,20 +88,95 @@ export function CashierPage(props: RouteSectionProps) {
    * teardown that would have to get the ordering right.
    */
   const [soundOn, setSoundOn] = createSignal(platform.sound.enabled());
+  /**
+   * Set when the browser refused to make a noise it was asked to make.
+   *
+   * There is no third setting here — sound is on or off, and this is neither.
+   * It is the till reporting that it *tried*: a tablet that has not been
+   * touched since it was unlocked has an autoplay policy in front of its
+   * speaker, and the only cure is a tap. Without this the control says Sound
+   * on, orders land, nothing is heard, and there is no way to tell that from a
+   * broken speaker or a cook who has gone home.
+   */
+  const [soundBlocked, setSoundBlocked] = createSignal(false);
   onMount(() => {
     const stop = platform.visibility.onInteraction(() => platform.sound.prime());
     onCleanup(stop);
   });
 
+  /**
+   * Make the noise, and believe the answer.
+   *
+   * `play` resolves false for two different reasons and only one of them is a
+   * fault: sound switched off is a choice, and a refused play is a problem. The
+   * `enabled()` check is what tells them apart.
+   */
+  const ping = async () => {
+    const played = await platform.sound.play('newOrder');
+    if (played) setSoundBlocked(false);
+    else if (platform.sound.enabled()) setSoundBlocked(true);
+  };
+
   const toggleSound = () => {
     const next = !soundOn();
     platform.sound.setEnabled(next);
     setSoundOn(next);
+    if (!next) {
+      setSoundBlocked(false);
+      return;
+    }
     // Play it on the way *on* so the person pressing it hears what they just
     // switched on — a mute toggle that gives no feedback is one people press
-    // twice.
-    if (next) platform.sound.play('newOrder');
+    // twice. It doubles as the cure for a blocked speaker: this call is inside
+    // a real tap, which is the one thing an autoplay policy accepts.
+    platform.sound.prime();
+    void ping();
   };
+
+  /**
+   * The ping, from the **board** rather than from the event stream.
+   *
+   * This used to hang off `onEvent`, which was wrong in a way that only shows
+   * up on a bad night. The stream is not the only way this screen learns that
+   * an order landed — when it is down the cashier falls back to polling every
+   * five seconds, and the board fills in perfectly well. It just did so in
+   * silence, with the control still saying Sound on, on exactly the evening
+   * when nobody should be watching a screen to find out.
+   *
+   * `roundCount` is the signal because it is the one the two transports share:
+   * `applyBoardEvent` increments it on `round.sent` and a refetch brings the
+   * server's number. Watching it covers both with one rule and cannot ping
+   * twice for one round.
+   *
+   * The first snapshot only establishes a baseline. A till opening at eleven in
+   * the morning to a board with four checks on it has not just been sent four
+   * orders, and a screen that announced them would teach the cashier to ignore
+   * the sound by lunchtime. The same is true of a reconnect, except there it is
+   * a judgement call rather than an obvious one: rounds that arrived while the
+   * stream was down *are* news, so they ping, once, however many there were.
+   */
+  const board = useOpenChecks();
+  let seenRounds: Map<string, number> | null = null;
+  createEffect(() => {
+    const checks = board.data;
+    if (!checks) return;
+
+    const next = new Map(checks.map((check) => [check.id, check.roundCount]));
+    const baseline = seenRounds;
+    seenRounds = next;
+    if (baseline === null) return;
+
+    for (const [id, count] of next) {
+      const before = baseline.get(id);
+      // A check this board has not seen before counts as new only once it has
+      // a round on it: `check.opened` and `round.sent` arrive a beat apart and
+      // the first of them is not an order.
+      if (before === undefined ? count > 0 : count > before) {
+        void ping();
+        return;
+      }
+    }
+  });
 
   /**
    * How long the oldest unprinted ticket has been waiting, in whole minutes.
@@ -138,17 +213,6 @@ export function CashierPage(props: RouteSectionProps) {
 
   const connection = createLive([RESTAURANT_CHANNEL], {
     onEvent(event) {
-      /*
-       * The ping, on `round.sent` and on nothing else.
-       *
-       * `check.opened` is not worth a second sound: a check is opened by the
-       * same request that sends its first round, so the two arrive a beat
-       * apart and pinging on both would double every new table. And
-       * `round.delivered` is the waiter telling *us* something rather than
-       * something arriving, which is not what the sound means.
-       */
-      if (event.name === 'round.sent') platform.sound.play('newOrder');
-
       // The board. `applyBoardEvent` returns the same array when nothing
       // changed, so an event about a check this screen is not showing costs a
       // `setQueryData` that does nothing and re-renders nothing.
@@ -334,8 +398,20 @@ export function CashierPage(props: RouteSectionProps) {
               gap: 'var(--pos-gap)',
             }}
           >
+            {/*
+              Three labels, two states. Blocked is not a setting the cashier
+              chose, so it does not get a third position in the toggle — it
+              replaces the "on" label with the one thing that fixes it, and
+              tapping still means the same thing it always meant. The tap that
+              turns sound off and on again is itself the gesture the browser
+              was holding out for.
+            */}
             <Button variant="text" onClick={toggleSound}>
-              {soundOn() ? m().cashier.soundOn : m().cashier.soundOff}
+              {soundOn()
+                ? soundBlocked()
+                  ? m().cashier.soundBlocked
+                  : m().cashier.soundOn
+                : m().cashier.soundOff}
             </Button>
             <p class="stat-label" style={{ margin: '0' }}>
               {status()}

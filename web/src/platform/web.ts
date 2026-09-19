@@ -462,15 +462,24 @@ const sound: Sound = {
     }
   },
 
-  play(name) {
-    if (!soundEnabled()) return;
+  async play(name) {
+    if (!soundEnabled()) return false;
     const audio = soundElement(name);
     // Rewind first, so two orders a second apart are two pings rather than one
     // — `play()` on an element that is already playing does nothing at all.
     audio.currentTime = 0;
-    void audio.play().catch(() => {
-      /* No clip, or never primed. Silence is the correct failure here. */
-    });
+    try {
+      await audio.play();
+      return true;
+    } catch {
+      /*
+       * A missing clip, or an autoplay policy that never saw a gesture it
+       * liked. Silence is still the right *behaviour* — there is nothing
+       * sensible to throw at a caller mid-service — but it is the wrong thing
+       * to say nothing about, which is what this return value is for.
+       */
+      return false;
+    }
   },
 
   enabled: soundEnabled,

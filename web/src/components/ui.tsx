@@ -521,6 +521,68 @@ export function ErrorBanner(props: { children: JSX.Element }) {
  * stays claimed — and the brief is explicit that confirmation is for exactly
  * two actions, neither of which is this one.
  */
+/**
+ * The first row of a pane somebody *entered*, and the way back out of it.
+ *
+ * Two panes in this app replace what the person was looking at a moment ago —
+ * the waiter's order pane and the cashier's check — and until now only one of
+ * them said so. The waiter's had no header at all: no table name, no exit. In
+ * the side-by-side layout the tables grid beside it stood in for both, which is
+ * why it went unnoticed; in the stacked layout a narrow tablet falls into, the
+ * grid is above the fold and there is nothing on screen that names the check
+ * the Send button is about to write to.
+ *
+ * ## Why it is a component and not two copies of a div
+ *
+ * The same reason {@link StaffBar} is. Two panes want the identical row, and
+ * two copies of it drift — the cashier's grew a Close on the trailing edge and
+ * the waiter's grew nothing, which is exactly the drift this prevents.
+ *
+ * ## The rules it encodes
+ *
+ * **Leading edge.** `StaffBar`'s Sign out owns the trailing edge of the row
+ * directly above this one, and two exits stacked at the same x means the tap
+ * that misses the cheap one hits the expensive one — a PIN re-entered mid
+ * service. Leading is also the furthest point in this layout from Send to
+ * kitchen, which the stylesheet deliberately makes the easiest thing to hit.
+ *
+ * **A direction, not a noun.** "Back to tables", not "Tables". A noun in a
+ * pane's top corner is the shape of a view switcher, and somebody hunting for
+ * the way out should not have to infer that a label is one.
+ *
+ * **Never a confirmation.** Leaving destroys nothing: the draft cart is in
+ * storage, per table, and is still there on the way back. The brief reserves
+ * confirmation for destructive actions and this is the opposite of one.
+ *
+ * **Never disabled.** Every other control in these panes goes dead while a send
+ * is in flight. This one does not, because a screen that will not let you leave
+ * while it is busy is the screen people force-quit — and on an installed
+ * tablet, with no browser chrome, force-quitting is all that is left.
+ */
+export function PaneHead(props: {
+  /** Where the back button goes, and what it says it is going to. */
+  backLabel: string;
+  onBack(): void;
+  /** What this pane is about: a table name, or the word for a counter sale. */
+  title: string;
+  /** The id the pane's `<section>` points at with `aria-labelledby`. */
+  titleId: string;
+  /** Anything the pane wants on the trailing edge — a status, a total. */
+  children?: JSX.Element;
+}) {
+  return (
+    <div class="section-head pane-head">
+      <Button variant="outlined" onClick={() => props.onBack()}>
+        {props.backLabel}
+      </Button>
+      <h2 id={props.titleId} class="pane-head-title">
+        {props.title}
+      </h2>
+      {props.children}
+    </div>
+  );
+}
+
 export function StaffBar(props: {
   /** What this screen is, in the app's language. */
   title: string;

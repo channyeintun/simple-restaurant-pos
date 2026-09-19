@@ -76,6 +76,7 @@ export const my: Messages = {
 
   waiter: {
     tables: 'စားပွဲများ',
+    backToTables: 'စားပွဲများသို့ ပြန်သွားမည်',
     free: 'အားနေသည်',
     takeaway: 'ပါဆယ်',
     newTakeaway: 'ပါဆယ် အသစ်',
@@ -123,6 +124,7 @@ export const my: Messages = {
 
   cashier: {
     openChecks: 'ဖွင့်ထားသော စာရင်းများ',
+    backToChecks: 'စာရင်းများသို့ ပြန်သွားမည်',
     none: 'ဖွင့်ထားသည် မရှိပါ',
     takePayment: 'ငွေရှင်းမည်',
     paymentHeadline: (name) => `${name} အတွက် ငွေရှင်းခြင်း`,
@@ -139,6 +141,7 @@ export const my: Messages = {
     retryPrint: 'ထပ်ထုတ်မည်',
     soundOn: 'အသံ ဖွင့်ထား',
     soundOff: 'အသံ ပိတ်ထား',
+    soundBlocked: 'အသံဖွင့်ရန် နှိပ်ပါ',
     queueStuck: (minutes) => `မိနစ် ${minutes} အတွင်း ဘာမှ ထွက်မလာပါ — မီးဖိုချောင် ပရင်တာကို စစ်ပါ`,
     queueStuckBody: 'အော်ဒါများ စောင့်ဆိုင်းနေပြီး ပြန်ကောင်းသည်နှင့် အလိုအလျောက် ထွက်လာပါမည်။',
   },

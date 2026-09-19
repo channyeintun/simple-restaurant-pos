@@ -663,6 +663,43 @@ md-outlined-icon-button {
 }
 
 /*
+ * The head of a pane somebody entered: back button, then what they are looking
+ * at. `.section-head` gives it the row; these three rules give it the things
+ * that row does not already do.
+ *
+ * `flex-wrap: nowrap` overrides the inherited wrap on purpose. A wrapping head
+ * is a head that becomes two rows the moment a label is long, and both labels
+ * here are long in Burmese — this is the one pane in the app with no vertical
+ * slack to give, so the row holds its height and the title gives way instead.
+ *
+ * It gives way by truncating rather than by wrapping, which needs all four of
+ * the properties below: `min-width: 0` alone lets a flex item shrink but does
+ * nothing about what happens to the text inside it, and the ellipsis is the
+ * part somebody reading this would assume was free.
+ *
+ * `flex-shrink: 0` on the button is what decides who loses. The way out must
+ * still be a whole, tappable control on the narrowest tablet in the building;
+ * a table name that reads "Tab…" on that tablet is a cost worth paying, and
+ * the person can see which tile is ringed anyway.
+ */
+.pane-head {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.pane-head > md-outlined-button {
+  flex-shrink: 0;
+}
+
+.pane-head-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
  * A list of editable rows.
  *
  * Rows are separated by the canvas showing through rather than by rules: the

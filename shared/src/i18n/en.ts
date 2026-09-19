@@ -94,6 +94,17 @@ export const en = {
 
   waiter: {
     tables: 'Tables',
+    /*
+     * The way out of the order pane, on every screen that has one.
+     *
+     * A direction and not a noun. "Tables" in the top corner of a pane is the
+     * shape of a view switcher; this is the control somebody goes looking for
+     * when they want to leave, and it has to read as leaving. There is no icon
+     * because this app has none — no icon font is loaded and `md-icon` is never
+     * registered — and a lone arrow glyph from the system font beside Burmese
+     * would be a convention invented here for one button.
+     */
+    backToTables: 'Back to tables',
     free: 'Free',
     takeaway: 'Takeaway',
     newTakeaway: 'New takeaway',
@@ -134,6 +145,12 @@ export const en = {
 
   cashier: {
     openChecks: 'Open checks',
+    /*
+     * Replaces what used to be `app.close` on the check view. "Close" is the
+     * verb this product uses for settling a check, and it sat two taps from
+     * Take payment on the one screen where closing a check moves money.
+     */
+    backToChecks: 'Back to checks',
     none: 'Nothing open',
     takePayment: 'Take payment',
     paymentHeadline: (name: string) => `Payment for ${name}`,
@@ -152,6 +169,13 @@ export const en = {
     retryPrint: 'Print again',
     soundOn: 'Sound on',
     soundOff: 'Sound off',
+    /*
+     * Shown in place of "Sound on" when the tablet refused to play. It names
+     * the cure rather than the cause: "autoplay is blocked" is true and
+     * useless to a cashier, and the tap it asks for is the exact gesture the
+     * browser is waiting for.
+     */
+    soundBlocked: 'Tap to allow sound',
     // Amber, not red, and the wording carries the difference. Red means the
     // kitchen definitely never got it; this means nothing has even tried to
     // print, which is a different thing to go and check.

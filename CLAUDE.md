@@ -362,6 +362,24 @@ These are requirements, not suggestions.
   per line, the total, and one **Send to kitchen** button. No cart icon, no separate
   review screen, **no "are you sure" on send**.
 - An occupied table shows its open check — rounds and total — with **Add items**.
+- **Every pane a person can enter opens with a pane head**: an outlined back button
+  on the leading edge naming where it goes — "Back to tables", "Back to checks" —
+  then the name of the thing the pane is about. It applies to the waiter's order pane
+  and the cashier's check, and not to the panes those two go back *to*; an exit on a
+  tree's root is an exit to nowhere, and its absence is what makes the presence of one
+  mean something. `PaneHead` in `components/ui.tsx` is the only copy.
+
+  It is not decoration and not only for narrow screens. The app is `display:
+  standalone`, so an installed tablet has no browser chrome and iPadOS has no system
+  back gesture — going back has to be something the screen draws. The title half earns
+  its place separately: the brief forbids a confirmation on Send, so the moment the
+  tables grid is off screen there is otherwise nothing naming the check that Send is
+  about to write to.
+
+  The back control is **never a `ConfirmButton`** — leaving destroys nothing, the draft
+  is in storage per table — and **never disabled while work is in flight**. A screen
+  that will not let you leave while it is busy is the screen people force-quit, and on
+  an installed tablet force-quitting is all that is left.
 - Every round that is still out shows **how long is left of what was promised**, so a
   waiter can answer "how long will it be" without guessing, and a **Delivered** button
   that stops that round's clock. A table's tile carries the oldest outstanding round's
@@ -381,10 +399,25 @@ printed for two minutes** — a job is only `failed` once the agent has *tried* 
 agent whose machine is switched off leaves every ticket `pending` and the red banner
 silent.
 
-It is also the **one screen in the app that makes a noise**: a short ping on
-`round.sent`, from `/sounds/new-order.mp3`, with an on/off remembered per device. The
+It is also the **one screen in the app that makes a noise**: a short ping when a new
+round lands, from `/sounds/new-order.mp3`, with an on/off remembered per device. The
 till is always on and at a counter; waiter tablets are carried between tables and stay
 silent, which is what the platform seam's note about a dining room was really about.
+
+The ping hangs off the **board**, not off the event stream, and that is load-bearing.
+It used to fire from `onEvent`, which meant it was silent in exactly the situation it
+exists for: when the stream is down the cashier falls back to polling every five
+seconds and the board fills in perfectly well — silently, with the control still
+saying Sound on. `roundCount` on `CheckSummary` is the signal because both transports
+produce it, so one rule covers them and cannot ping twice for one round. The first
+snapshot after a load only establishes a baseline; a till opening to a board with four
+checks on it has not just been sent four orders.
+
+`platform.sound.play` returns whether a noise was actually made. A browser that has not
+seen a gesture refuses playback by rejecting a promise nobody was watching, so a till
+could sit there with Sound on and never make a sound. When it refuses, the control says
+**Tap to allow sound** instead of Sound on — the tap that fixes it is the gesture the
+browser was holding out for.
 
 ### Backoffice
 

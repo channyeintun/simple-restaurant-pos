@@ -208,8 +208,21 @@ export interface Sound {
    * harmless and does nothing; calling it twice is harmless too.
    */
   prime(): void;
-  /** Play it, if sound is on and the clip exists. Never throws. */
-  play(name: SoundName): void;
+  /**
+   * Play it, if sound is on and the clip exists. Never throws.
+   *
+   * Resolves **false** when no noise was made, and that return value is not
+   * decoration. A browser that has not seen a gesture refuses playback, and it
+   * refuses it by rejecting a promise nobody was watching — so a till can sit
+   * there with Sound on, an order landing every few minutes, and never make a
+   * sound, with nothing on screen admitting it. Whoever calls this is the only
+   * one in a position to say so, so they are handed the answer.
+   *
+   * False also covers sound being switched off, which is not a fault and
+   * callers should not report it as one — ask {@link Sound.enabled} first if
+   * the distinction matters.
+   */
+  play(name: SoundName): Promise<boolean>;
   /** Whether this device wants to hear anything. Defaults to on. */
   enabled(): boolean;
   setEnabled(on: boolean): void;

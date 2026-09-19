@@ -5,7 +5,16 @@ import { For, Show, createSignal } from 'solid-js';
 import { ApiError } from '../../api/client.js';
 import { markRoundPrinted, payCheck, voidItem } from '../../api/orders.js';
 import { PrintSheet, createTicketPrinter, ticketForRound } from '../../components/PrintSheet.js';
-import { Button, Chip, ChipSet, ConfirmButton, Dialog, ErrorBanner, Spinner } from '../../components/ui.js';
+import {
+  Button,
+  Chip,
+  ChipSet,
+  ConfirmButton,
+  Dialog,
+  ErrorBanner,
+  PaneHead,
+  Spinner,
+} from '../../components/ui.js';
 import { queryKeys, useCheck } from '../../lib/queries.js';
 import { useApp } from '../../state/app.js';
 import { forgetSlot } from '../../state/cart.js';
@@ -22,6 +31,12 @@ const METHODS: PaymentMethod[] = paymentMethodSchema.options;
  * should not be one: a check that could be closed without a payment is a way
  * for a table's food to leave the building with nothing recorded against it.
  *
+ * That paragraph was false for as long as this screen carried a button saying
+ * **Close** in its top corner. It only ever went back to the board, but it was
+ * the product's own word for settling a check, in the same card as Take
+ * payment, on the one screen where closing a check moves money. It now says
+ * where it goes — Back to checks — and the paragraph above is true again.
+ *
  * ## Why the payment carries a total the cashier has already seen
  *
  * Because they are holding the money. A cashier reads a figure off this screen,
@@ -32,6 +47,8 @@ const METHODS: PaymentMethod[] = paymentMethodSchema.options;
  * the person with the cash gets to agree to the new number rather than discover
  * it on the receipt.
  */
+const CHECK_PANE_TITLE_ID = 'cashier-check-pane-title';
+
 export function CashierCheck() {
   const { m } = useLocale();
   const app = useApp();
@@ -130,6 +147,7 @@ export function CashierCheck() {
   return (
     <section
       class="card"
+      aria-labelledby={CHECK_PANE_TITLE_ID}
       style={{
         flex: '1',
         display: 'flex',
@@ -138,23 +156,34 @@ export function CashierCheck() {
         'min-height': '0',
       }}
     >
+      {/*
+        Outside the fetch guard, deliberately.
+
+        A back control that only exists once the request has resolved is
+        missing from the one moment it is most wanted: a check that is slow to
+        load, or that failed to, on a till with a queue at it. The title says
+        so instead — it is the only part of this row that has to wait for data.
+      */}
+      <PaneHead
+        backLabel={m().cashier.backToChecks}
+        onBack={() => navigate('/cashier')}
+        title={
+          check.data ? (check.data.tableName ?? m().waiter.takeaway) : m().app.loading
+        }
+        titleId={CHECK_PANE_TITLE_ID}
+      >
+        <Show when={check.data}>
+          {(detail) => (
+            <p class="stat-label" style={{ margin: '0', 'white-space': 'nowrap' }}>
+              {detail().openedByName} · {app.clock(detail().openedAt)}
+            </p>
+          )}
+        </Show>
+      </PaneHead>
+
       <Show when={check.data} fallback={<Spinner />}>
         {(detail) => (
           <>
-            <div class="section-head">
-              <div>
-                <h2 style={{ margin: '0', 'font-size': '1.35rem' }}>
-                  {detail().tableName ?? m().waiter.takeaway}
-                </h2>
-                <p class="stat-label" style={{ margin: '0' }}>
-                  {detail().openedByName} · {app.clock(detail().openedAt)}
-                </p>
-              </div>
-              <Button variant="outlined" onClick={() => navigate('/cashier')}>
-                {m().app.close}
-              </Button>
-            </div>
-
             <Show when={error()}>{(message) => <ErrorBanner>{message()}</ErrorBanner>}</Show>
 
             <div style={{ flex: '1 1 auto', 'min-height': '0', overflow: 'auto' }}>
