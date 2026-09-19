@@ -1,4 +1,12 @@
-import type { AppUpdated, EventStream, EventStreamHandlers, Install, Platform } from './index.js';
+import type {
+  AppUpdated,
+  EventStream,
+  EventStreamHandlers,
+  Install,
+  Platform,
+  Sound,
+  SoundName,
+} from './index.js';
 
 /**
  * Browser implementation of the platform seam. This is the only file in the
@@ -385,6 +393,93 @@ async function registerServiceWorker(): Promise<boolean> {
   }
 }
 
+/* ------------------------------------------------------------------ sound */
+
+/**
+ * Where the clips live. One entry today; the map is what stops the next one
+ * being a string literal somewhere in a component.
+ *
+ * `/sounds/` is served straight out of `web/public/`, so adding a clip is
+ * dropping a file in — no import, no build step, and no bundle growth. A file
+ * that is not there costs a 404 and a rejected promise that nobody sees, which
+ * is the behaviour wanted: a restaurant that has not supplied a sound gets a
+ * silent till rather than an error.
+ */
+const SOUND_SOURCES: Record<SoundName, string> = {
+  newOrder: '/sounds/new-order.mp3',
+};
+
+/** Per device, like the language. Absent means on. */
+const SOUND_KEY = 'sound.enabled';
+
+const soundCache = new Map<SoundName, HTMLAudioElement>();
+let soundPrimed = false;
+
+function soundElement(name: SoundName): HTMLAudioElement {
+  let audio = soundCache.get(name);
+  if (!audio) {
+    audio = new Audio(SOUND_SOURCES[name]);
+    // The clip is a few kilobytes and is wanted the instant an order lands, so
+    // it is fetched when the element is built rather than on first play — the
+    // first ping of a service should not be the one that waits for a download.
+    audio.preload = 'auto';
+    soundCache.set(name, audio);
+  }
+  return audio;
+}
+
+function soundEnabled(): boolean {
+  return storage.get(SOUND_KEY) !== 'off';
+}
+
+const sound: Sound = {
+  prime() {
+    if (soundPrimed) return;
+    soundPrimed = true;
+    for (const name of Object.keys(SOUND_SOURCES) as SoundName[]) {
+      const audio = soundElement(name);
+      /*
+       * Play it muted and stop it again. That is the whole trick: what an
+       * autoplay policy actually gates is whether an element has been played
+       * during a gesture, so a muted play inside one buys the element the right
+       * to make noise later, when nobody is touching the screen.
+       *
+       * Both paths put `muted` back. A rejection here means the gesture was not
+       * one the browser accepted — leaving the element muted would then make
+       * the first real ping silent and look like a broken speaker.
+       */
+      audio.muted = true;
+      audio
+        .play()
+        .then(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          audio.muted = false;
+        })
+        .catch(() => {
+          audio.muted = false;
+        });
+    }
+  },
+
+  play(name) {
+    if (!soundEnabled()) return;
+    const audio = soundElement(name);
+    // Rewind first, so two orders a second apart are two pings rather than one
+    // — `play()` on an element that is already playing does nothing at all.
+    audio.currentTime = 0;
+    void audio.play().catch(() => {
+      /* No clip, or never primed. Silence is the correct failure here. */
+    });
+  },
+
+  enabled: soundEnabled,
+
+  setEnabled(on) {
+    storage.set(SOUND_KEY, on ? 'on' : 'off');
+  },
+};
+
 /* ----------------------------------------------------------------- random */
 
 /**
@@ -442,6 +537,7 @@ export const webPlatform: Platform = {
   registerServiceWorker,
   install,
   onAppUpdated,
+  sound,
   openExternal(url) {
     window.open(url, '_blank', 'noopener,noreferrer');
   },

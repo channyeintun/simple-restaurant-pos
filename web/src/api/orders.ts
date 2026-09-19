@@ -91,6 +91,23 @@ export const voidItem = (checkId: string, itemId: string): Promise<CheckDetail> 
   );
 
 /**
+ * The waiter carried this round to the table.
+ *
+ * The one call in this app that records something the software could not
+ * otherwise know — everything else here is the consequence of a tap that also
+ * *did* something. It stops that round's clock: a round with `deliveredAt`
+ * null is outstanding, and that is what every timer on every screen reads.
+ *
+ * Tapping it twice is harmless. The Worker guards on the round still being
+ * out, so the second tap leaves the first stamp standing and answers with the
+ * check as it is — which is what the person tapping meant either way.
+ */
+export const deliverRound = (checkId: string, roundId: string): Promise<CheckDetail> =>
+  post<unknown>(`/checks/${checkId}/rounds/${roundId}/delivered`).then((body) =>
+    checkDetailSchema.parse(body),
+  );
+
+/**
  * Take the money and close the check.
  *
  * `expectedTotalMinor` is what the cashier was looking at when they took it. If

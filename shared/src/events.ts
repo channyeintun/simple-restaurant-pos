@@ -20,8 +20,11 @@ import { idSchema, isoSchema, itemSchema, minorSchema, paymentMethodSchema } fro
  * round trip it provoked, which is the arrangement this whole design exists to
  * avoid.
  *
- * There are six events and there should stay six. Each one is a thing that
- * happens in the room, not a table that changed.
+ * There are seven, and each one is a thing that happens in the room rather than
+ * a table that changed. It was six until the waiter started marking rounds
+ * delivered — `round.delivered` is the seventh, and it earns its place the same
+ * way the others do: the cashier's board counts how many rounds are still out,
+ * and without it that count would only correct itself on a reconnect.
  */
 
 /* ----------------------------------------------------------------- channel */
@@ -131,6 +134,43 @@ export const printJobFailedSchema = z.object({
   at: isoSchema,
 });
 
+/**
+ * A waiter carried a round to the table.
+ *
+ * The one event in the catalogue that is recorded by a person rather than
+ * caused by one: everything else here is the consequence of a tap that also did
+ * something else. This is a tap whose *whole* purpose is to say that a thing
+ * happened in the room which no server could otherwise know.
+ *
+ * It carries no total, because nothing about the money changed — delivering
+ * food is not paying for it — and no items, because the board is counting
+ * rounds rather than drawing them.
+ */
+export const roundDeliveredSchema = z.object({
+  checkId: idSchema,
+  roundId: idSchema,
+  at: isoSchema,
+  /**
+   * What the check still has out, *after* this delivery — absolute, not a
+   * delta.
+   *
+   * Carried because of the rule at the top of this file: a payload has to be
+   * applicable without a follow-up request. A board holding a check with three
+   * rounds out, told only that one of them arrived, knows the count is now two
+   * and has no idea which of the remaining two is now the oldest — so it could
+   * only guess, show a stale clock, or ask. Three small numbers cost less than
+   * any of those.
+   *
+   * Absolute rather than a decrement, and that is the better half of the
+   * bargain: a client whose stream dropped and missed a send comes back with a
+   * count that is wrong, and the next delivery silently corrects it instead of
+   * compounding the error.
+   */
+  outstandingRounds: z.number().int().min(0),
+  oldestOutstandingAt: isoSchema.nullable(),
+  oldestOutstandingTargetMinutes: z.number().int().min(0).max(600),
+});
+
 /** The job printed. Clears the banner; nothing else has to change. */
 export const printJobPrintedSchema = z.object({
   jobId: idSchema,
@@ -156,6 +196,7 @@ export const realtimeSchema = {
   },
   round: {
     sent: roundSentSchema,
+    delivered: roundDeliveredSchema,
   },
   item: {
     voided: itemVoidedSchema,
@@ -174,6 +215,7 @@ export interface EventPayloadMap {
   'check.opened': z.infer<typeof checkOpenedSchema>;
   'check.paid': z.infer<typeof checkPaidSchema>;
   'round.sent': z.infer<typeof roundSentSchema>;
+  'round.delivered': z.infer<typeof roundDeliveredSchema>;
   'item.voided': z.infer<typeof itemVoidedSchema>;
   'print_job.failed': z.infer<typeof printJobFailedSchema>;
   'print_job.printed': z.infer<typeof printJobPrintedSchema>;
@@ -186,6 +228,7 @@ export const EVENT_NAMES = [
   'check.opened',
   'check.paid',
   'round.sent',
+  'round.delivered',
   'item.voided',
   'print_job.failed',
   'print_job.printed',
@@ -210,6 +253,9 @@ export type EventCatalogueIsConsistent = Assert<
 > &
   Assert<Exact<EventPayloadMap['check.paid'], z.infer<typeof realtimeSchema.check.paid>>> &
   Assert<Exact<EventPayloadMap['round.sent'], z.infer<typeof realtimeSchema.round.sent>>> &
+  Assert<
+    Exact<EventPayloadMap['round.delivered'], z.infer<typeof realtimeSchema.round.delivered>>
+  > &
   Assert<Exact<EventPayloadMap['item.voided'], z.infer<typeof realtimeSchema.item.voided>>> &
   Assert<
     Exact<EventPayloadMap['print_job.failed'], z.infer<typeof realtimeSchema.print_job.failed>>

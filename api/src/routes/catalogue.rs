@@ -230,6 +230,7 @@ async fn create_product(req: &mut Request, env: &Env, identity: &Identity) -> Ap
     let category_id = body.string("categoryId", &Str::ID)?;
     let name = body.string("name", &Str::name(60, "Product name is required"))?;
     let price_minor = body.int("priceMinor", &Int::MINOR)?;
+    let prep_minutes = body.opt_int("prepMinutes", &Int::PREP)?;
     let sort = body.opt_int("sort", &Int::SORT)?;
 
     let db_handle = crate::env::db(env)?;
@@ -242,17 +243,21 @@ async fn create_product(req: &mut Request, env: &Env, identity: &Identity) -> Ap
 
     let row: Option<db::ProductRow> = db_handle
         .prepare(
-            "INSERT INTO products (id, category_id, name, price_minor, sort, active)
-        VALUES (?1, ?2, ?3, ?4,
-                COALESCE(?5, (SELECT COALESCE(MAX(sort), 0) + 1 FROM products WHERE category_id = ?2)),
+            "INSERT INTO products (id, category_id, name, price_minor, prep_minutes, sort, active)
+        VALUES (?1, ?2, ?3, ?4, COALESCE(?5, 10),
+                COALESCE(?6, (SELECT COALESCE(MAX(sort), 0) + 1 FROM products WHERE category_id = ?2)),
                 1)
-        RETURNING id, category_id, name, price_minor, sort, active",
+        RETURNING id, category_id, name, price_minor, prep_minutes, sort, active",
         )
         .bind(&[
             db::text(&http::new_id("prd")),
             db::text(&category_id),
             db::text(&name),
             db::number(price_minor as f64),
+            // 10 is the column's own default, repeated here because an INSERT
+            // that names the column has to supply something. The two agreeing
+            // is the point; `0003_timing.sql` explains why the number is ten.
+            db::opt_number(prep_minutes.map(|value| value as f64)),
             db::opt_number(sort.map(|value| value as f64)),
         ])?
         .first(None)
@@ -276,6 +281,7 @@ async fn update_product(
     let category_id = body.opt_string("categoryId", &Str::ID)?;
     let name = body.opt_string("name", &Str::name(60, "Product name is required"))?;
     let price_minor = body.opt_int("priceMinor", &Int::MINOR)?;
+    let prep_minutes = body.opt_int("prepMinutes", &Int::PREP)?;
     let sort = body.opt_int("sort", &Int::SORT)?;
     let active = body.opt_bool("active")?;
 
@@ -284,8 +290,9 @@ async fn update_product(
         require_category(&db_handle, category_id).await?;
     }
 
-    // Changing the price here changes what the *next* order costs and nothing
-    // that has already been sent. An item copied the name and the price when
+    // Changing the price or the prep time here changes what the *next* order
+    // costs and how long it is quoted at, and nothing that has already been
+    // sent. An item copied the name and the price when
     // its round went to the kitchen — see `items.price_minor_snapshot` — so a
     // bill printed at six is not rewritten by an edit at seven. That is the one
     // denormalisation in the schema and it is the reason this route is safe to
@@ -296,16 +303,18 @@ async fn update_product(
         SET category_id = COALESCE(?2, category_id),
             name = COALESCE(?3, name),
             price_minor = COALESCE(?4, price_minor),
-            sort = COALESCE(?5, sort),
-            active = COALESCE(?6, active)
+            prep_minutes = COALESCE(?5, prep_minutes),
+            sort = COALESCE(?6, sort),
+            active = COALESCE(?7, active)
         WHERE id = ?1
-        RETURNING id, category_id, name, price_minor, sort, active",
+        RETURNING id, category_id, name, price_minor, prep_minutes, sort, active",
         )
         .bind(&[
             db::text(id),
             db::opt_text(category_id.as_deref()),
             db::opt_text(name.as_deref()),
             db::opt_number(price_minor.map(|value| value as f64)),
+            db::opt_number(prep_minutes.map(|value| value as f64)),
             db::opt_number(sort.map(|value| value as f64)),
             db::opt_bool(active),
         ])?

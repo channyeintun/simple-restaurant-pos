@@ -1,4 +1,4 @@
-import { type TicketDoc, renderEscPos } from '../src/index.ts';
+import { type TicketDoc, pollIntervalFor, renderEscPos } from '../src/index.ts';
 
 /**
  * The bytes a ticket turns into.
@@ -126,6 +126,20 @@ check('an unbreakable name is broken mid-word', unbroken.replace(/[^x]/g, '').le
 // A ticket for a round whose every line was voided is still a piece of paper,
 // and it still has to cut — a slip that never cuts jams the next one.
 check('an empty ticket still cuts', renderEscPos(doc({ lines: [] })).endsWith('\x1dV\x42\x03'), true);
+
+// --- the idle ladder ---------------------------------------------------------
+// Three seconds while the restaurant is awake, stepping down twice when it is
+// not. An off-by-one here is invisible until somebody notices the kitchen is
+// slow on a Friday, which is why the boundaries are pinned rather than assumed.
+
+check('a busy restaurant is polled every three seconds', pollIntervalFor(0), 3_000);
+check('and still is after four minutes of quiet', pollIntervalFor(79), 3_000);
+// 5 minutes / 3s = 100 polls.
+check('five minutes of nothing steps down to ten', pollIntervalFor(100), 10_000);
+check('and stays there through twenty-nine minutes', pollIntervalFor(599), 10_000);
+// 30 minutes / 3s = 600 polls.
+check('half an hour of nothing steps down to thirty', pollIntervalFor(600), 30_000);
+check('and does not step down again', pollIntervalFor(100_000), 30_000);
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

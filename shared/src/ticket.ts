@@ -11,23 +11,24 @@ import { formatClock } from './time.js';
  * ## The doc carries no words
  *
  * Not a line of prose, and that is the design rather than an omission. A
- * {@link TicketDoc} is a round number, a table, a time, a name and some lines;
- * the labels around them — "ROUND", "VOID", "Takeaway" — come from the i18n
- * catalogue at the moment of printing, which is what lets a restaurant print
- * its tickets in Burmese without this module or its Rust twin holding a
- * catalogue each.
+ * {@link TicketDoc} is a round number, a table, a time, a name and some lines.
+ * The labels around them — "ROUND", "VOID", "TAKEAWAY", "TABLE" and the
+ * waiter's line — belong to the **agent**, in `agent/src/index.ts`, next to the
+ * ESC/POS bytes that draw them.
  *
- * It also draws the line in the right place. What a ticket *says* is a rule and
- * lives twice; what it *is* on the wire — ESC/POS bytes, a font size, where the
- * paper is cut — belongs to the agent alone, and so does which language the
- * labels are in.
+ * That draws the line in the right place. What a ticket *says* is a rule and
+ * lives twice, here and in Rust; what it *is* on the wire — the bytes, the font
+ * size, where the paper is cut, and the words themselves — belongs to the one
+ * thing that knows what a printer can render.
  *
- * (The printer's own font is the reason that last part is a real choice rather
- * than a formality: a thermal printer's built-in character set has no Myanmar
- * glyphs, so a Burmese label prints as boxes unless the agent rasterises. The
- * README says so under Known limitations. Product names come from the menu and
- * are whatever the manager typed, which is the same problem and not one this
- * app can solve by choosing differently.)
+ * Which is not much. A thermal printer's built-in character set has no Myanmar
+ * glyphs, so those five labels are English and a Burmese one would print as
+ * boxes. They are deliberately *not* in `shared/src/i18n/`: the agent has no
+ * build step and cannot import that package at all — node's type stripping does
+ * not rewrite the `.js` specifiers it uses internally — and there would be
+ * nothing to gain if it could. The README covers it under Known limitations,
+ * along with the harder half, which is that dish names come from the menu and
+ * are printed exactly as the manager typed them.
  *
  * ## The time is the restaurant's
  *

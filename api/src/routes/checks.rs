@@ -102,6 +102,9 @@ pub async fn route(
         (Method::Post, [id, "items", item_id, "void"]) => {
             void_item(env, identity, id, item_id).await
         }
+        (Method::Post, [id, "rounds", round_id, "delivered"]) => {
+            deliver_round(env, identity, id, round_id).await
+        }
         (Method::Post, [id, "pay"]) => pay(req, env, identity, id).await,
         _ => return None,
     })
@@ -207,6 +210,7 @@ async fn send_round(req: &mut Request, env: &Env, identity: &Identity) -> ApiRes
             product_id: product.id.clone(),
             name: product.name.clone(),
             price_minor: product.price_minor,
+            prep_minutes: product.prep_minutes,
             qty: item.qty,
             note: item.note.clone(),
         });
@@ -340,8 +344,8 @@ async fn send_round(req: &mut Request, env: &Env, identity: &Identity) -> ApiRes
             db_handle
                 .prepare(
                     "INSERT INTO items (id, round_id, product_id, name_snapshot,
-                           price_minor_snapshot, qty, note)
-        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+                           price_minor_snapshot, prep_minutes_snapshot, qty, note)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
         WHERE EXISTS (SELECT 1 FROM rounds WHERE id = ?2)",
                 )
                 .bind(&[
@@ -350,6 +354,7 @@ async fn send_round(req: &mut Request, env: &Env, identity: &Identity) -> ApiRes
                     db::text(&line.product_id),
                     db::text(&line.name),
                     db::number(line.price_minor as f64),
+                    db::number(line.prep_minutes as f64),
                     db::number(line.qty as f64),
                     db::opt_text(line.note.as_deref()),
                 ])?,
@@ -515,6 +520,103 @@ async fn void_item(
             }),
         )
         .await;
+
+    Ok(Response::from_json(&detail)?)
+}
+
+/* ------------------------------------------------------------- delivering */
+
+/// The waiter carried this round to the table.
+///
+/// The one write in this app that records something the software could not
+/// otherwise know. Everything else here is the consequence of a tap that also
+/// *did* something — a round was sent, a line was struck off, money changed
+/// hands — and this is a tap whose whole purpose is to say that a thing
+/// happened in the room.
+///
+/// It is what stops the clock. A round with `delivered_at` NULL is outstanding,
+/// and that is what every timer in the app reads: the countdown on the round,
+/// the age on the waiter's table tile, the amber and red. A round nobody marks
+/// stays outstanding and goes on showing late, which is the honest behaviour —
+/// the alternative is software quietly deciding that food arrived.
+///
+/// `require_staff` rather than a till role, and no ownership check beyond that.
+/// Plates get carried by whoever has a free hand; a waiter who delivers
+/// somebody else's table is helping, not doing something that needs refusing.
+/// `delivered_by` records which of them it was.
+///
+/// Guarded on `delivered_at IS NULL` so that two waiters tapping it — which is
+/// exactly what happens when two people carry one round between them — leaves
+/// the first stamp standing rather than quietly moving the time later. The
+/// second tap is not an error worth a red screen either: the round *is*
+/// delivered, which is what the person meant, so the answer is the check as it
+/// stands.
+async fn deliver_round(
+    env: &Env,
+    identity: &Identity,
+    check_id: &str,
+    round_id: &str,
+) -> ApiResult<Response> {
+    middleware::require_staff(identity)?;
+    let staff_id = identity.staff_id.clone().unwrap_or_default();
+
+    let at = http::now_iso();
+    let db_handle = crate::env::db(env)?;
+
+    let result = db_handle
+        .prepare(
+            "UPDATE rounds
+        SET delivered_at = ?2,
+            delivered_by = ?3
+        WHERE id = ?1
+          AND check_id = ?4
+          AND delivered_at IS NULL",
+        )
+        .bind(&[db::text(round_id), db::text(&at), db::text(&staff_id), db::text(check_id)])?
+        .run()
+        .await?;
+
+    let Some(detail) = db::check_detail(&db_handle, check_id).await? else {
+        return Err(http::not_found("No such check"));
+    };
+
+    let changed = result
+        .meta()
+        .ok()
+        .flatten()
+        .and_then(|meta| meta.changes)
+        .is_some_and(|changes| changes > 0);
+
+    // A round this check does not have is a 404; one already delivered is not.
+    if !changed && !detail.rounds.iter().any(|round| round.id == round_id) {
+        return Err(http::not_found("No such round on this check"));
+    }
+
+    // Only on the transition. A second tap publishes nothing — every event is
+    // three Redis commands, and the board's count is already right.
+    if changed {
+        // What the check still has out, computed from the detail that was just
+        // read rather than counted again — so the numbers on the event and the
+        // numbers in the response cannot disagree.
+        let outstanding: Vec<&db::RoundDetail> =
+            detail.rounds.iter().filter(|round| round.delivered_at.is_none()).collect();
+        let oldest = outstanding.first();
+
+        create_pub_sub(env)
+            .emit(
+                &[RESTAURANT_CHANNEL],
+                "round.delivered",
+                &json!({
+                    "checkId": detail.id,
+                    "roundId": round_id,
+                    "at": at,
+                    "outstandingRounds": outstanding.len(),
+                    "oldestOutstandingAt": oldest.map(|round| &round.sent_at),
+                    "oldestOutstandingTargetMinutes": oldest.map_or(0, |round| round.target_minutes),
+                }),
+            )
+            .await;
+    }
 
     Ok(Response::from_json(&detail)?)
 }
@@ -706,6 +808,7 @@ struct PricedLine {
     product_id: String,
     name: String,
     price_minor: i64,
+    prep_minutes: i64,
     qty: i64,
     note: Option<String>,
 }

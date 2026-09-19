@@ -1,12 +1,13 @@
 import { type CheckSummary, type PrintJobView, RESTAURANT_CHANNEL } from '@pos/shared';
 import type { RouteSectionProps } from '@solidjs/router';
 import { useQueryClient } from '@tanstack/solid-query';
-import { For, Show, createMemo, createSignal } from 'solid-js';
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { retryPrintJob } from '../api/orders.js';
 import { Button, StaffBar } from '../components/ui.js';
 import { applyBoardEvent, boardNeedsRefetch } from '../lib/board.js';
 import { createLive } from '../lib/live.js';
-import { queryKeys, usePrintJobs, useTables } from '../lib/queries.js';
+import { queryKeys, usePrintJobs, useStuckQueue, useTables } from '../lib/queries.js';
+import { platform } from '../platform/index.js';
 import { useApp } from '../state/app.js';
 import { useLocale } from '../state/locale.js';
 
@@ -70,6 +71,65 @@ export function CashierPage(props: RouteSectionProps) {
   });
 
   const failed = usePrintJobs('failed');
+  const pending = useStuckQueue();
+
+  /*
+   * The one noise this app makes, and the two awkward parts of making it.
+   *
+   * Browsers refuse audio until the page has been interacted with, so the clip
+   * is unlocked from inside a real gesture — `onInteraction` fires on
+   * `pointerdown` and `keydown`, which both qualify. A cashier touches this
+   * screen within seconds of a shift starting, so in practice it is primed long
+   * before the first order; a till nobody has touched all morning has nobody
+   * listening to it either.
+   *
+   * `prime()` is idempotent, so subscribing to every interaction rather than
+   * unsubscribing after the first costs one boolean check per tap and saves a
+   * teardown that would have to get the ordering right.
+   */
+  const [soundOn, setSoundOn] = createSignal(platform.sound.enabled());
+  onMount(() => {
+    const stop = platform.visibility.onInteraction(() => platform.sound.prime());
+    onCleanup(stop);
+  });
+
+  const toggleSound = () => {
+    const next = !soundOn();
+    platform.sound.setEnabled(next);
+    setSoundOn(next);
+    // Play it on the way *on* so the person pressing it hears what they just
+    // switched on — a mute toggle that gives no feedback is one people press
+    // twice.
+    if (next) platform.sound.play('newOrder');
+  };
+
+  /**
+   * How long the oldest unprinted ticket has been waiting, in whole minutes.
+   *
+   * Null when the queue is empty or moving normally. The threshold is two
+   * minutes because that is comfortably longer than the worst honest case —
+   * the agent polls every three seconds, and a dead printer resolves to
+   * `failed` in about twenty — so anything past it means no process is emptying
+   * the queue at all.
+   *
+   * `app.serverNow()` is not a thing and deliberately so: this compares against
+   * the tablet's own clock, which is the one case in this app where that is
+   * right. A tablet whose clock is wrong by minutes would misreport this, and a
+   * tablet whose clock is wrong by minutes has worse problems; every *stored*
+   * time in this app is the Worker's, and this is a duration on a screen rather
+   * than a fact in the database.
+   */
+  const stuckMinutes = createMemo(() => {
+    const jobs = pending.data ?? [];
+    if (jobs.length === 0) return null;
+    const oldest = jobs.reduce(
+      (earliest, job) => Math.min(earliest, Date.parse(job.createdAt)),
+      Number.POSITIVE_INFINITY,
+    );
+    if (!Number.isFinite(oldest)) return null;
+    const minutes = Math.floor((Date.now() - oldest) / 60_000);
+    return minutes >= 2 ? minutes : null;
+  });
 
   const refreshAll = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.openChecks });
@@ -78,6 +138,17 @@ export function CashierPage(props: RouteSectionProps) {
 
   const connection = createLive([RESTAURANT_CHANNEL], {
     onEvent(event) {
+      /*
+       * The ping, on `round.sent` and on nothing else.
+       *
+       * `check.opened` is not worth a second sound: a check is opened by the
+       * same request that sends its first round, so the two arrive a beat
+       * apart and pinging on both would double every new table. And
+       * `round.delivered` is the waiter telling *us* something rather than
+       * something arriving, which is not what the sound means.
+       */
+      if (event.name === 'round.sent') platform.sound.play('newOrder');
+
       // The board. `applyBoardEvent` returns the same array when nothing
       // changed, so an event about a check this screen is not showing costs a
       // `setQueryData` that does nothing and re-renders nothing.
@@ -98,7 +169,12 @@ export function CashierPage(props: RouteSectionProps) {
        * number under the cashier's thumb is the number they are about to
        * charge.
        */
-      if (event.name === 'round.sent' || event.name === 'item.voided' || event.name === 'check.paid') {
+      if (
+        event.name === 'round.sent' ||
+        event.name === 'round.delivered' ||
+        event.name === 'item.voided' ||
+        event.name === 'check.paid'
+      ) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.check(event.data.checkId) });
       }
 
@@ -176,6 +252,39 @@ export function CashierPage(props: RouteSectionProps) {
             onSignOut={signOut}
           />
 
+          {/*
+            The quieter of the two printer warnings, and the one that covers the
+            hole the red banner cannot: a job is only `failed` once the agent has
+            *tried* it, so a machine that is switched off leaves every ticket at
+            `pending` and the red banner silent. The kitchen just stops getting
+            orders.
+
+            Amber rather than red, and the wording is different on purpose. Red
+            is "the kitchen definitely never got this round, go and tell them".
+            This is "nothing is printing, go and look at the machine" — and the
+            orders themselves are safe, which the second line says, because the
+            first thing anybody will want to know is whether they have to re-key
+            the evening.
+          */}
+          <Show when={stuckMinutes()}>
+            {(minutes) => (
+              <div
+                role="alert"
+                style={{
+                  padding: '14px 16px',
+                  'border-radius': 'var(--pos-radius-row)',
+                  background: 'var(--pos-open-container)',
+                  color: 'var(--pos-open)',
+                  'font-size': '1rem',
+                }}
+              >
+                <strong>{m().cashier.queueStuck(minutes())}</strong>
+                <br />
+                {m().cashier.queueStuckBody}
+              </div>
+            )}
+          </Show>
+
           <Show when={(failed.data ?? []).length > 0}>
             <div class="error-banner" role="alert">
               <div class="section-head">
@@ -211,9 +320,27 @@ export function CashierPage(props: RouteSectionProps) {
             local development runs with no Upstash at all, and the five-second
             fallback is a perfectly good way to run a till.
           */}
-          <p class="stat-label" style={{ margin: '0', 'text-align': 'right' }}>
-            {status()}
-          </p>
+          {/*
+            Device-level state, together, out of the way: whether this screen is
+            hearing the room and whether it is making a noise about it. Both
+            belong to the tablet rather than to whoever is standing at it, which
+            is why neither is in the staff bar.
+          */}
+          <div
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'flex-end',
+              gap: 'var(--pos-gap)',
+            }}
+          >
+            <Button variant="text" onClick={toggleSound}>
+              {soundOn() ? m().cashier.soundOn : m().cashier.soundOff}
+            </Button>
+            <p class="stat-label" style={{ margin: '0' }}>
+              {status()}
+            </p>
+          </div>
         </div>
       )}
     </Show>

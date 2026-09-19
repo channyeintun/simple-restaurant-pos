@@ -32,6 +32,7 @@ use wasm_bindgen::JsValue;
 use worker::d1::D1Database;
 use worker::Result as WorkerResult;
 
+use pos_core::timing::{self, TimedLine};
 use pos_core::totals::{self, CheckLine};
 
 /* ------------------------------------------------------------------- rows */
@@ -142,6 +143,7 @@ pub struct ProductRow {
     pub category_id: String,
     pub name: String,
     pub price_minor: i64,
+    pub prep_minutes: i64,
     pub sort: i64,
     pub active: i64,
 }
@@ -249,6 +251,7 @@ pub struct Product {
     pub category_id: String,
     pub name: String,
     pub price_minor: i64,
+    pub prep_minutes: i64,
     pub sort: i64,
     pub active: bool,
 }
@@ -302,6 +305,7 @@ pub fn to_product(row: &ProductRow) -> Product {
         category_id: row.category_id.clone(),
         name: row.name.clone(),
         price_minor: row.price_minor,
+        prep_minutes: row.prep_minutes,
         sort: row.sort,
         active: row.active == 1,
     }
@@ -519,12 +523,12 @@ pub async fn list_categories(
 pub async fn list_products(db: &D1Database, include_inactive: bool) -> WorkerResult<Vec<Product>> {
     let statement = if include_inactive {
         db.prepare(
-            "SELECT id, category_id, name, price_minor, sort, active FROM products
+            "SELECT id, category_id, name, price_minor, prep_minutes, sort, active FROM products
         ORDER BY category_id ASC, sort ASC, name COLLATE NOCASE ASC",
         )
     } else {
         db.prepare(
-            "SELECT id, category_id, name, price_minor, sort, active FROM products
+            "SELECT id, category_id, name, price_minor, prep_minutes, sort, active FROM products
         WHERE active = 1
         ORDER BY category_id ASC, sort ASC, name COLLATE NOCASE ASC",
         )
@@ -711,6 +715,26 @@ pub struct OpenCheckRow {
     pub round_count: i64,
 }
 
+/// One line of one round that is still out, on some open check.
+///
+/// Flat rather than nested, for the same reason [`OpenLineRow`] is: the shape
+/// that comes back from a join is a list of lines, and grouping it in Rust is
+/// cheaper than asking SQLite for a nested aggregate — and here it is not only
+/// cheaper but *necessary*. A round's target is the slowest dish on it, which
+/// is `pos_core::timing::round_target_minutes`, a twinned rule. A `MAX()` in
+/// the statement would be a third implementation of it, in a language neither
+/// twin is written in and held to no test case, which is exactly what the twin
+/// rule exists to prevent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OutstandingLineRow {
+    pub check_id: String,
+    pub round_id: String,
+    pub sent_at: String,
+    /// Optional because the join is `LEFT`: a round with no lines cannot be
+    /// created through the API and still must not take a screen down.
+    pub prep_minutes_snapshot: Option<i64>,
+}
+
 /// A live line on some open check, with only the two columns a total needs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenLineRow {
@@ -745,10 +769,14 @@ pub struct RoundItemRow {
     pub seq: i64,
     pub sent_by_name: String,
     pub sent_at: String,
+    /// Null while the round is still out — what every timer in the app reads.
+    pub delivered_at: Option<String>,
+    pub delivered_by_name: Option<String>,
     pub item_id: Option<String>,
     pub product_id: Option<String>,
     pub name_snapshot: Option<String>,
     pub price_minor_snapshot: Option<i64>,
+    pub prep_minutes_snapshot: Option<i64>,
     pub qty: Option<i64>,
     pub note: Option<String>,
     pub voided_at: Option<String>,
@@ -795,6 +823,10 @@ pub struct ProductPriceRow {
     pub id: String,
     pub name: String,
     pub price_minor: i64,
+    /// Copied onto the item beside the price, and for the same reason: what the
+    /// kitchen was expected to take is a fact about the evening this round was
+    /// sent, not about whatever the backoffice says an hour later.
+    pub prep_minutes: i64,
 }
 
 /* --------------------------------------------- mapped values for a screen */
@@ -809,6 +841,9 @@ pub struct CheckSummary {
     pub opened_by_name: String,
     pub opened_at: String,
     pub round_count: i64,
+    pub outstanding_rounds: i64,
+    pub oldest_outstanding_at: Option<String>,
+    pub oldest_outstanding_target_minutes: i64,
     pub total_minor: i64,
 }
 
@@ -821,6 +856,7 @@ pub struct Item {
     pub product_id: Option<String>,
     pub name_snapshot: String,
     pub price_minor_snapshot: i64,
+    pub prep_minutes_snapshot: i64,
     pub qty: i64,
     pub note: Option<String>,
     pub voided_at: Option<String>,
@@ -835,6 +871,12 @@ pub struct RoundDetail {
     pub seq: i64,
     pub sent_by_name: String,
     pub sent_at: String,
+    pub delivered_at: Option<String>,
+    pub delivered_by_name: Option<String>,
+    /// The slowest dish on the round, from `pos_core::timing`. The browser
+    /// draws its countdown from this rather than working it out again, so the
+    /// number a waiter quotes and the number the Worker believes are one value.
+    pub target_minutes: i64,
     pub items: Vec<Item>,
 }
 
@@ -913,11 +955,27 @@ pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>
         JOIN checks c ON c.id = r.check_id
         WHERE c.status = 'open' AND i.voided_at IS NULL",
             ),
+            // What is still out, oldest first. `idx_rounds_outstanding` covers
+            // the predicate and the ordering, and it is partial — so this walks
+            // the handful of rounds the kitchen currently has rather than every
+            // round the restaurant has ever sent.
+            db.prepare(
+                "SELECT r.check_id AS check_id,
+                r.id AS round_id,
+                r.sent_at AS sent_at,
+                i.prep_minutes_snapshot AS prep_minutes_snapshot
+        FROM rounds r
+        JOIN checks c ON c.id = r.check_id
+        LEFT JOIN items i ON i.round_id = r.id
+        WHERE c.status = 'open' AND r.delivered_at IS NULL
+        ORDER BY r.sent_at ASC, r.id ASC",
+            ),
         ])
         .await?;
 
     let headers: Vec<OpenCheckRow> = results[0].results()?;
     let lines: Vec<OpenLineRow> = results[1].results()?;
+    let outstanding: Vec<OutstandingLineRow> = results[2].results()?;
 
     let mut by_check: std::collections::HashMap<String, Vec<CheckLine>> =
         std::collections::HashMap::new();
@@ -932,10 +990,50 @@ pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>
             .push(CheckLine { price_minor_snapshot: line.price_minor_snapshot, qty: line.qty, voided_at: None });
     }
 
+    /*
+     * The outstanding rounds, grouped twice: by check, then by round within it.
+     *
+     * Walked in order rather than grouped through nested maps, because the
+     * statement already returned it oldest-first and a map would throw that
+     * away — the *first* round seen for a check is the oldest one, which is the
+     * only one a tile shows.
+     */
+    let mut out_by_check: std::collections::HashMap<String, OutstandingRounds> =
+        std::collections::HashMap::new();
+    for row in outstanding {
+        let entry = out_by_check.entry(row.check_id).or_default();
+
+        /*
+         * A **set** of round ids rather than a counter, because these rows are
+         * lines and not rounds: a round of three dishes arrives as three rows,
+         * and anything that increments per row counts it three times. Comparing
+         * against the previously-seen id would work only while rows of one
+         * round stay adjacent, which the `ORDER BY` does not actually promise
+         * for two rounds sent in the same millisecond. A set does not care.
+         */
+        entry.round_ids.insert(row.round_id.clone());
+
+        // First row wins, and the statement orders oldest first — so the first
+        // round seen for a check is the one whose clock a tile shows.
+        if entry.oldest_round_id.is_none() {
+            entry.oldest_round_id = Some(row.round_id.clone());
+            entry.oldest_at = Some(row.sent_at.clone());
+        }
+
+        // Only the oldest round's target is ever shown, so only its lines are
+        // collected. The rest are counted and dropped.
+        if entry.oldest_round_id.as_deref() == Some(row.round_id.as_str()) {
+            if let Some(minutes) = row.prep_minutes_snapshot {
+                entry.oldest_lines.push(TimedLine { prep_minutes_snapshot: minutes });
+            }
+        }
+    }
+
     Ok(headers
         .into_iter()
         .map(|header| {
             let total = by_check.get(&header.id).map_or(0, |lines| totals::check_total_minor(lines));
+            let out = out_by_check.remove(&header.id).unwrap_or_default();
             CheckSummary {
                 id: header.id,
                 table_id: header.table_id,
@@ -943,10 +1041,24 @@ pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>
                 opened_by_name: header.opened_by_name,
                 opened_at: header.opened_at,
                 round_count: header.round_count,
+                outstanding_rounds: out.round_ids.len() as i64,
+                oldest_outstanding_at: out.oldest_at,
+                // The twinned rule, not a `MAX()` in the statement above.
+                oldest_outstanding_target_minutes: timing::round_target_minutes(&out.oldest_lines),
                 total_minor: total,
             }
         })
         .collect())
+}
+
+/// What one check still has out, while the flat rows are being grouped.
+#[derive(Debug, Default)]
+struct OutstandingRounds {
+    /// Distinct rounds, not rows. See the comment where it is filled.
+    round_ids: std::collections::HashSet<String>,
+    oldest_round_id: Option<String>,
+    oldest_at: Option<String>,
+    oldest_lines: Vec<TimedLine>,
 }
 
 /// One check, entire.
@@ -987,16 +1099,20 @@ pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Optio
                 r.seq AS seq,
                 s.name AS sent_by_name,
                 r.sent_at AS sent_at,
+                r.delivered_at AS delivered_at,
+                carrier.name AS delivered_by_name,
                 i.id AS item_id,
                 i.product_id AS product_id,
                 i.name_snapshot AS name_snapshot,
                 i.price_minor_snapshot AS price_minor_snapshot,
+                i.prep_minutes_snapshot AS prep_minutes_snapshot,
                 i.qty AS qty,
                 i.note AS note,
                 i.voided_at AS voided_at,
                 i.voided_by AS voided_by
         FROM rounds r
         JOIN staff s ON s.id = r.sent_by
+        LEFT JOIN staff carrier ON carrier.id = r.delivered_by
         LEFT JOIN items i ON i.round_id = r.id
         WHERE r.check_id = ?1
         ORDER BY r.seq ASC, i.rowid ASC",
@@ -1029,6 +1145,12 @@ pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Optio
                 seq: row.seq,
                 sent_by_name: row.sent_by_name.clone(),
                 sent_at: row.sent_at.clone(),
+                delivered_at: row.delivered_at.clone(),
+                delivered_by_name: row.delivered_by_name.clone(),
+                // Filled in once the round's lines have all been seen — the
+                // target is the slowest of them and there is no way to know
+                // which that is until the last one has arrived.
+                target_minutes: 0,
                 items: Vec::new(),
             });
         }
@@ -1039,6 +1161,11 @@ pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Optio
         else {
             continue;
         };
+        // Defaulted rather than required, because the column was added by
+        // migration 0003 with a default of its own: a line written before that
+        // migration ran has the value SQLite backfilled, and a line somehow
+        // without one is a ten-minute dish rather than a dropped row.
+        let prep_minutes_snapshot = row.prep_minutes_snapshot.unwrap_or(10);
         if let Some(round) = rounds.last_mut() {
             round.items.push(Item {
                 id,
@@ -1046,12 +1173,23 @@ pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Optio
                 product_id: row.product_id,
                 name_snapshot,
                 price_minor_snapshot,
+                prep_minutes_snapshot,
                 qty,
                 note: row.note,
                 voided_at: row.voided_at,
                 voided_by: row.voided_by,
             });
         }
+    }
+
+    // Now that every line has been seen, each round knows its slowest dish.
+    for round in &mut rounds {
+        let lines: Vec<TimedLine> = round
+            .items
+            .iter()
+            .map(|item| TimedLine { prep_minutes_snapshot: item.prep_minutes_snapshot })
+            .collect();
+        round.target_minutes = timing::round_target_minutes(&lines);
     }
 
     let mut detail = CheckDetail {
@@ -1132,7 +1270,7 @@ pub async fn products_by_id(
     // in this file.
     let placeholders: Vec<String> = (1..=ids.len()).map(|index| format!("?{index}")).collect();
     let statement = format!(
-        "SELECT id, name, price_minor FROM products
+        "SELECT id, name, price_minor, prep_minutes FROM products
         WHERE active = 1 AND id IN ({})",
         placeholders.join(", ")
     );

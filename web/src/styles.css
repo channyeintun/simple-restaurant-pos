@@ -1187,3 +1187,82 @@ md-outlined-icon-button {
   flex-direction: column;
   gap: 2px;
 }
+
+/* ---------------------------------------------------------------- timing */
+
+/*
+ * How long a table has been waiting, on the tile and on the round.
+ *
+ * Three states and three treatments, and the jump between them is deliberately
+ * uneven. `cooking` is unremarkable and inherits whatever it sits on; `due`
+ * gets weight but no new colour, because the tile is already amber and amber-
+ * on-amber says nothing; `late` takes the whole tile red, because that is the
+ * one a waiter has to see from across a room without looking for it.
+ */
+.tile-timer {
+  font-family: var(--pos-typeface-numeric);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+
+.tile-timer[data-state='due'] {
+  font-weight: 700;
+}
+
+.tile-timer[data-state='late'] {
+  font-weight: 700;
+}
+
+/*
+ * A table whose food is late. It wins over the open tint below it in the
+ * stylesheet order, which is the point — every late table is also an open one.
+ */
+.table-tile[data-timing='late'] {
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+
+.table-tile[data-timing='late'] .table-tile-state,
+.table-tile[data-timing='late'] .tile-timer {
+  color: inherit;
+}
+
+/*
+ * The countdown on a round in the check panel: a quiet row under the round's
+ * header saying what was promised and what is left of it.
+ */
+.round-timing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.round-timing[data-state='late'] {
+  color: var(--md-sys-color-error);
+  font-weight: 600;
+}
+
+.round-timing[data-state='due'] {
+  color: var(--pos-open);
+  font-weight: 600;
+}
+
+/* A round that is out on the check panel. The left edge carries the state so
+   the eye can run down a list of rounds without reading any of them. */
+.sent-round[data-state='late'] {
+  box-shadow: inset 3px 0 0 var(--md-sys-color-error);
+  padding-left: 10px;
+}
+
+.sent-round[data-state='due'] {
+  box-shadow: inset 3px 0 0 var(--pos-open);
+  padding-left: 10px;
+}
+
+.sent-round[data-state='delivered'] .sent-round-head {
+  /* Done is quieter than everything still to do. */
+  opacity: 0.65;
+}

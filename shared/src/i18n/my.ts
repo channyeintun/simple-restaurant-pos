@@ -54,6 +54,25 @@ export const my: Messages = {
     admin: 'မန်နေဂျာ',
   },
 
+  /*
+   * These are new and worth a native speaker's eye, like the rest of this file
+   * — see Known limitations in the README. The two that matter most are
+   * `delivered`, which has to mean "it reached the table" and not "it was sent
+   * to the kitchen" (`ပို့`, which the waiter block already uses for the send),
+   * and `due`/`late`, which have to be tellable apart at a glance.
+   */
+  timing: {
+    delivered: 'စားပွဲရောက်ပြီး',
+    due: 'အချိန်တန်ပြီ',
+    late: 'နောက်ကျနေသည်',
+    minutes: (count) => `${count} မိနစ်`,
+    overdueBy: (count) => `${count} မိနစ် ကျော်`,
+    readyIn: (count) => `နောက် ${count} မိနစ်ခန့်`,
+    readyNow: 'ခဏအတွင်း',
+    took: (count) => `${count} မိနစ် ကြာခဲ့သည်`,
+    nothingOut: 'စောင့်နေသည် မရှိပါ',
+  },
+
   waiter: {
     tables: 'စားပွဲများ',
     free: 'အားနေသည်',
@@ -71,8 +90,20 @@ export const my: Messages = {
     total: 'စုစုပေါင်း',
     note: 'မှတ်ချက်',
     noteHint: 'မီးဖိုချောင်က သိသင့်သည့် အရာ',
-    clear: 'ရှင်းမည်',
-    clearHeadline: 'ဤအော်ဒါကို ရှင်းမလား?',
+    /*
+     * NOT `ရှင်းမည်`, which is what this said and which is wrong in a
+     * restaurant: `ရှင်း` is what you say about settling a bill, so a waiter
+     * reading it on the cart button sees the word for *paying* next to an
+     * order that has not been sent yet — and it sits a few pixels from
+     * `ငွေရှင်းမည်` on the cashier's screen, which really does mean pay.
+     *
+     * `ဖျက်` is delete, and `အားလုံး ဖျက်မည်` is "delete all", which is what
+     * the button does and cannot be read as anything else. Kept distinct from
+     * the two neighbouring destructive words as well: `ပယ်ဖျက်မည်` voids a line
+     * the kitchen already has, and `ပယ်မည်` discards an unconfirmed send.
+     */
+    clear: 'အားလုံး ဖျက်မည်',
+    clearHeadline: 'အော်ဒါအားလုံး ဖျက်မလား?',
     clearBody:
       'မီးဖိုချောင်သို့ မပို့ရသေးသည်များ ပျက်သွားပါမည်။ ပို့ပြီးသားများ ငွေစာရင်းတွင် ကျန်ရှိနေပါမည်။',
     round: (seq) => `အကြိမ် ${seq}`,
@@ -95,7 +126,9 @@ export const my: Messages = {
     takePayment: 'ငွေရှင်းမည်',
     paymentHeadline: (name) => `${name} အတွက် ငွေရှင်းခြင်း`,
     paying: 'ငွေရှင်းနေသည်…',
-    paid: 'ရှင်းပြီး',
+    // `ငွေရှင်းပြီး` rather than a bare `ရှင်းပြီး`: with the money word in
+    // front it can only mean paid, where alone it could be read as cleared.
+    paid: 'ငွေရှင်းပြီး',
     live: 'တိုက်ရိုက်',
     reconnecting: 'ပြန်ချိတ်နေသည်…',
     polling: 'စက္ကန့်အနည်းငယ်ခြား စစ်နေသည်',
@@ -103,6 +136,10 @@ export const my: Messages = {
     printFailedLine: (table, error) => `${table} — ${error}`,
     printFailedNoReason: 'ပရင်တာက အကြောင်းပြချက် မပြောပါ',
     retryPrint: 'ထပ်ထုတ်မည်',
+    soundOn: 'အသံ ဖွင့်ထား',
+    soundOff: 'အသံ ပိတ်ထား',
+    queueStuck: (minutes) => `မိနစ် ${minutes} အတွင်း ဘာမှ ထွက်မလာပါ — မီးဖိုချောင် ပရင်တာကို စစ်ပါ`,
+    queueStuckBody: 'အော်ဒါများ စောင့်ဆိုင်းနေပြီး ပြန်ကောင်းသည်နှင့် အလိုအလျောက် ထွက်လာပါမည်။',
   },
 
   backoffice: {
@@ -133,7 +170,9 @@ export const my: Messages = {
       price: 'ဈေးနှုန်း',
       category: 'အမျိုးအစား',
       role: 'တာဝန်',
+      prep: 'ပြင်ဆင်ချိန် (မိနစ်)',
     },
+    prepHint: 'မီးဖိုချောင်တွင် ခန့်မှန်း ကြာချိန်။ စားပွဲထိုးက ဤအချိန်ကို ပြောပါမည်။',
     orderHint: 'ဂဏန်း နည်းသည်က ရှေ့တွင် ရှိမည်',
     priceHint: (symbol) => `${symbol} အပြည့် — ဒဿမ မပါ`,
     priceInvalid: 'ဤသည် ငွေပမာဏ မဟုတ်ပါ',

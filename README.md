@@ -20,7 +20,7 @@ rather than compiled into the app. The interface is English and Burmese
 
 | | |
 | --- | --- |
-| App | Cloudflare Pages project `restaurant-pos` |
+| App | Cloudflare Pages project `pannuyaung` |
 | API | Worker `restaurant-pos-api` |
 | Database | D1 `restaurant-pos` |
 | Realtime | Upstash Redis, optional — without it everything polls |
@@ -52,8 +52,10 @@ Getting in is by device claim link, then a staff PIN. See
   printer on somebody's LAN, so a small node process asks the Worker every three
   seconds whether anything needs printing.
 
-Milestone 0 is the scaffold: the schema, the auth, and `npm run dev` working end
-to end. [Status](#status) says what is actually built.
+All six milestones are in: a waiter sends rounds, the cashier settles them over
+a live stream, the agent prints them, and the whole thing installs on a tablet.
+[Status](#status) has the route table, and says what the tests cover and what is
+only ever exercised by hand.
 
 ---
 
@@ -97,8 +99,11 @@ and makes the tablet-specific behaviour testable.
 
 ## Local development
 
-Prerequisites: Node 20+ and a Rust toolchain with the `wasm32-unknown-unknown`
-target. **Local development needs no cloud resources at all** — `wrangler dev`
+Prerequisites: Node 22.6+ and a Rust toolchain with the `wasm32-unknown-unknown`
+target. 22.6 rather than 20 because the printer agent runs its TypeScript
+directly — `node --experimental-strip-types`, no build step — and `npm test`
+runs the agent's suite the same way, so an older Node fails the tests rather
+than the app. **Local development needs no cloud resources at all** — `wrangler dev`
 runs D1 on your machine, and without Upstash credentials realtime simply is not
 there.
 
@@ -150,8 +155,28 @@ Open the URL it prints. That claims the device and leaves you on the PIN screen.
 **The seeded manager has no PIN yet**, and cannot be given one from here: the
 hash is keyed with `AUTH_SECRET`, which lives in the Worker's secrets and
 deliberately never leaves them, so `seed.sql` stores `NULL` rather than a digest
-it would have to guess the encoding of. Setting a PIN is a backoffice screen, in
-milestone 1. Until then a claimed device is as far as this goes.
+it would have to guess the encoding of.
+
+Setting a PIN is a backoffice screen — but the backoffice is behind the admin
+role, and the only admin on a fresh database is the one with no PIN. That door
+is locked from the inside, so there is a script for it:
+
+```bash
+npm run pin:set -w @pos/api -- stf_admin 1234 --local
+```
+
+It reads `AUTH_SECRET` out of `api/.dev.vars` and writes the hash exactly the
+way `identity::pin_hash` does — whatever writes a PIN has to build it the way
+the keypad checks it, or the right four digits are wrong forever. After that the
+seeded owner signs in on the PIN screen and everything else is set from the
+backoffice.
+
+With a PIN set the whole loop runs locally: tables, cart, Send, the cashier's
+board, the backoffice lists. The one thing the dev server cannot do by itself is
+print — a Send writes a `print_jobs` row and leaves it `pending`, and nothing
+drains that queue until the agent is running. See
+[Checking it without a printer](#checking-it-without-a-printer) for doing that
+with `nc` instead of a printer.
 
 Realtime is **off** by default locally. Without `UPSTASH_REDIS_REST_URL` and
 `UPSTASH_REDIS_REST_TOKEN` the cashier page polls every 5 seconds instead, which
@@ -163,12 +188,13 @@ is a perfectly good way to develop and costs nothing but Worker requests.
 | --- | --- |
 | `npm run dev` | API + frontend together |
 | `npm run typecheck` | `shared/`, `web/`, `agent/` |
-| `npm run check` | The above, then `cargo check` the Worker for wasm32 |
-| `npm test` | Pure-logic tests both sides, TypeScript and Rust (no servers needed) |
+| `npm run check` | The above, then `cargo check` the Worker for wasm32 **and** `cargo test` both Rust crates |
+| `npm test` | All four suites — shared, web, agent, Rust. No servers needed |
 | `npm run db:migrate:local` | Apply migrations locally |
 | `npm run db:migrate:remote` | Apply migrations to the deployed D1 |
 | `npm run db:seed:local -w @pos/api` | The bootstrap rows |
 | `npm run claim:bootstrap -w @pos/api -- <deviceId> --local` | Mint a device claim link |
+| `npm run pin:set -w @pos/api -- <staffId> <pin> --local` | Set a PIN — the only way to give the seeded admin one |
 
 ---
 
@@ -180,8 +206,9 @@ is a perfectly good way to develop and costs nothing but Worker requests.
 npx wrangler d1 create restaurant-pos
 ```
 
-Copy the `database_id` it prints into `api/wrangler.jsonc`, replacing
-`REPLACE_WITH_YOUR_D1_DATABASE_ID`.
+Copy the `database_id` it prints into `api/wrangler.jsonc`, over the
+`database_id` already in the `d1_databases` block — it holds the id of the
+database this repo was developed against, which is not yours.
 
 ### 2. Apply migrations to the real database
 
@@ -190,8 +217,8 @@ npm run db:migrate:remote
 ```
 
 Then put something in it. The seed is `INSERT OR IGNORE` throughout and safe to
-run twice, but read it first — it creates a manager called "Manager" and a
-tablet called "Counter tablet", and you probably want your own names. From
+run twice, but read it first — it creates an admin called "Owner" and a tablet
+called "Counter tablet", and you probably want your own names. From
 `api/`:
 
 ```bash
@@ -268,18 +295,114 @@ becomes first-party, which is strictly better on an iPad. Set
 
 ### The printer agent
 
-Nothing deploys the agent; it runs inside the restaurant, on the same network as
-the printer. Copy `agent/agent.config.example.json` to `agent.config.json` —
-git-ignored, because it holds a device token and the address of a printer on
-somebody's LAN — fill in the Worker URL, a token and the printer's address, and
-run `npm start -w @pos/agent`. The token is an ordinary device credential: add a
-device for the kitchen in the backoffice, mint its claim link, redeem it, and
-copy the token out.
+Nothing deploys this one. It runs **inside the restaurant**, on the same network
+as the printer, and it is the only part of the system that does — which is the
+whole reason it exists. Cloudflare cannot open a socket to a printer behind
+somebody's router and the printer cannot call Cloudflare, so the direction is
+reversed: the agent polls the Worker for pending jobs and prints what it is
+given.
 
-It needs Node 22.6+ there, because it runs its TypeScript directly rather than
-building anything — the process in the restaurant should be a file somebody can
-open and read when it misbehaves. It is milestone 4, so today it validates its
-config, says what is missing and exits rather than pretending to print.
+Deploying the Worker and the frontend therefore does **not** get the kitchen
+printing. Five things have to be true in the building.
+
+**1. A printer that speaks ESC/POS over TCP 9100.** An Ethernet or Wi-Fi model —
+Epson TM-T20/TM-T88, Xprinter, Rongta and most units sold as a "network POS
+printer" all do. A **USB-only printer will not work**, because the agent opens a
+socket rather than driving a print queue; there is no fallback path for one.
+
+The ticket layout assumes **80mm paper**, which is 42 characters across. 58mm
+paper is 32, so long dish names wrap more; nothing breaks, it is just tighter.
+
+**2. A fixed address for it.** Give the printer a static IP, or a DHCP
+reservation on the router. Most printers print their current address on a
+self-test page if you hold FEED while switching them on. A printer whose address
+moves is a kitchen that stops printing on a Tuesday for no visible reason.
+
+**3. A machine to run the agent on.** Anything always-on and on the same LAN: a
+mini PC, a Raspberry Pi, the backoffice computer. It needs **Node 22.6+**,
+because the agent runs its TypeScript directly rather than building anything —
+the process in a restaurant should be a file somebody can open and read when it
+misbehaves.
+
+If that machine is off, nothing is lost: an unacked job stays `pending`, and the
+agent prints the backlog when it comes back. But nothing prints while it is off,
+and a job nobody has *tried* to print is not a failed job, so the red banner
+stays quiet. The cashier's screen has a second, quieter warning for exactly this
+— an amber line once the oldest unprinted ticket has been waiting two minutes,
+which with the agent running never happens, because a dead printer resolves to
+`failed` in about twenty seconds. It still wants to be a machine nobody switches
+off at night.
+
+**4. A device token.** The agent holds an ordinary device credential, exactly
+like a tablet's — there is no separate machine identity, because a printer agent
+*is* a device: something in the building the restaurant trusts and can cut off in
+one place. Bumping `token_version` from the backoffice stops it dead, the same
+way it stops a lost tablet.
+
+Add a device for the kitchen in the backoffice and mint its claim link. A tablet
+would open that link in a browser; the agent has no browser, so redeem it for a
+token directly:
+
+```sh
+# The nonce is the part of the claim URL after the '#'.
+curl -sX POST https://<your-worker>.workers.dev/auth/claim \
+  -H 'Content-Type: application/json' \
+  -d '{"nonce":"PASTE_THE_NONCE_HERE"}'
+```
+
+The reply is `{"token":"…","identity":{…}}`. Take the `token`. The link is
+single-use and is spent by that call, so if you also open it in a browser one of
+the two will fail — mint a second link if you need both.
+
+**5. The config, and something to keep it running.** Copy
+`agent/agent.config.example.json` to `agent/agent.config.json` — git-ignored,
+because it holds a device token and the address of a printer on somebody's LAN —
+fill in the four values, and run it:
+
+```sh
+npm start -w @pos/agent
+```
+
+It prints what it is configured with, then polls every three seconds. A ticket
+logs one line; a failure logs the printer's own words.
+
+In service it wants a supervisor, because the agent exits non-zero on a fatal
+error — a revoked or expired token — and retries everything else forever. On a
+Linux box, a unit like this is enough:
+
+```ini
+[Unit]
+Description=Restaurant POS printer agent
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/simple-restaurant-pos
+ExecStart=/usr/bin/npm start -w @pos/agent
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`Restart=always` rather than `on-failure`: the two ways this process ends are a
+fatal credential problem, which restarting will not fix but which is harmless to
+retry every ten seconds while somebody reads the log, and a `SIGTERM` from you,
+which systemd does not treat as a failure anyway.
+
+#### Checking it without a printer
+
+The printing path can be exercised with any TCP listener, which is worth doing
+once before trusting it in a kitchen:
+
+```sh
+# On the agent's machine, in place of the printer:
+nc -l 9100 | cat -v
+```
+
+Point `printerHost` at `127.0.0.1`, send a round from a tablet, and the ESC/POS
+bytes appear — `^[` is ESC, `^]VB^C` is the cut. If they do, the only thing
+between that and paper is the printer's own address.
 
 ---
 
@@ -298,8 +421,23 @@ Redis — the tight one*.) Upstash's free tier is 500,000 commands a month.
 - **Waiter tablets never subscribe.** A waiter is looking at one table at a
   time, and has just caused the change they are looking at. Opening a table
   fetches its check.
-- **The printer agent never subscribes.** It polls every 3 seconds, which costs
-  Worker requests — a tier with enormous headroom — and zero Redis commands.
+- **The printer agent never subscribes.** It polls, which costs Worker requests
+  — a tier with enormous headroom — and zero Redis commands.
+
+  This is the decision most often argued with, and the argument is usually
+  "realtime is already wired up, why poll?". Because the two budgets are not the
+  same size. Worker requests are 100,000 a *day*; Upstash commands are 500,000 a
+  *month*, and the keepalive bills 360 an hour **for silence** — a subscribed
+  agent costs the same at four in the morning as it does at dinner. A second
+  always-on connection would take the month from ~173,000 to ~432,000, which is
+  86% of the tier for a process nobody is looking at. Polling spends the
+  abundant resource instead of the scarce one.
+
+  It polls on a ladder rather than flat out: **3 seconds** while tickets are
+  moving, **10 seconds** after five minutes of nothing, **30 seconds** after
+  thirty. Any job resets it immediately. The three-second figure is set against
+  how long a waiter takes to walk from the table to the pass, and the steps only
+  engage when there is nobody making that walk.
 - **The cashier's polling fallback is 5 seconds.** A cashier waiting on a
   table's total is a person standing still.
 - **The cashier's stream idles out after 4 hours**, not the reference's 5
@@ -320,9 +458,14 @@ costs 1 (`XREVRANGE` replay). The 4-hour idle timeout is worth 1,440 commands
 before it gives up, which is the price of not making the cashier reconnect
 during a quiet afternoon.
 
-**Workers — 100,000 requests/day.** Not a constraint. The agent's 3-second poll
-is 14,400 over a service day and the cashier's fallback is 8,640, with the
-waiter tablets in the hundreds.
+**Workers — 100,000 requests/day.** Not a constraint. The agent is about 17,000
+across a twelve-hour service and the closed half of the day — 14,400 of them in
+service at three seconds, the rest on the idle ladder. (Flat-out at three
+seconds around the clock it would be 28,800, which is what it used to be and
+what the systemd unit in *Deployment* would otherwise give you: `Restart=always`
+means the agent is up whether the restaurant is or not.) The cashier's fallback
+is 8,640, the stuck-queue check is 2,880, and the waiter tablets are in the
+hundreds.
 
 **D1 — 5 GB, 5M rows read/day, 100k rows written/day.** Not a constraint either:
 a whole check — opened, three rounds, a dozen items, a payment, the print jobs —
@@ -445,6 +588,20 @@ long-lived token.
   menu and are printed exactly as the manager typed them, so a Burmese menu will
   print as boxes too. The fix is a printer that can be driven in raster mode,
   which is a different agent and not V1.
+- **A prep time is an estimate a manager typed, not a measurement.** `prep_minutes`
+  is what the waiter quotes and what "late" is measured against, and the software
+  never adjusts it — a kitchen that is consistently five minutes over will go on
+  being flagged late until somebody changes the number. Delivered times are recorded
+  (`rounds.delivered_at`), so the data to tune it with is there; using it
+  automatically would be a report, and reports beyond the daily total are out of
+  scope.
+- **A round nobody marks delivered stays outstanding forever**, and goes on showing
+  as late on the waiter's grid. That is deliberate: the alternative is software
+  quietly deciding that food arrived. It also means the timing is only as good as the
+  habit of tapping the button.
+- **The new-order sound plays on the till and nowhere else.** Waiter tablets do not
+  subscribe to anything — 360 Upstash commands an hour each would not fit the budget
+  — so there is no push for them to ping on. The kitchen hears its printer.
 - **The Burmese is unreviewed by a native speaker.** English is the source of
   truth in `shared/src/i18n/`, and every other catalogue is typed as `typeof en`
   so a missing key is a build error — but a key that is present and awkward is
@@ -465,6 +622,7 @@ long-lived token.
 | 3 | Cashier | live open checks, voids, payments, the printer failure banner |
 | 4 | Agent | ESC/POS over TCP 9100, and the ticket it prints |
 | 5 | PWA | manifest, icons, service worker, add-to-home-screen, update prompt |
+| — | Timing | per-dish prep times, a countdown per round, Delivered, and a ping on the till |
 
 ### The API, whole
 
@@ -488,6 +646,7 @@ what it needs on top of that.
 | `GET /checks/:id` · `GET /checks/by-table/:id` | staff | one check, whole |
 | `POST /rounds` | staff | **send to kitchen** — find-or-open, in one batch |
 | `POST /checks/:id/items/:itemId/void` | staff | strike a line off, and tell the kitchen |
+| `POST /checks/:id/rounds/:roundId/delivered` | staff | the waiter carried it out; stops that round's clock |
 | `POST /checks/:id/pay` | cashier/admin | settle and close, at a total the cashier agreed to |
 | `GET /print-jobs` | device | the queue, with each ticket already rendered |
 | `POST /print-jobs/:id/printed` · `/failed` | device | the agent's acks |

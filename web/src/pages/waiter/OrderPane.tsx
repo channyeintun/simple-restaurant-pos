@@ -1,9 +1,9 @@
-import type { CheckDetail, Product } from '@pos/shared';
+import { type CheckDetail, type Product, roundTiming } from '@pos/shared';
 import { useNavigate, useParams } from '@solidjs/router';
 import { useQueryClient } from '@tanstack/solid-query';
 import { For, Show, createEffect, createMemo, createSignal, on } from 'solid-js';
 import { ApiError } from '../../api/client.js';
-import { sendRound, voidItem } from '../../api/orders.js';
+import { deliverRound, sendRound, voidItem } from '../../api/orders.js';
 import {
   Button,
   Chip,
@@ -14,6 +14,7 @@ import {
   Spinner,
   TextField,
 } from '../../components/ui.js';
+import { createNow } from '../../lib/clock.js';
 import { queryKeys, useCategories, useCheck, useProducts, useTableCheck } from '../../lib/queries.js';
 import { useApp } from '../../state/app.js';
 import {
@@ -226,6 +227,27 @@ export function OrderPane() {
     void queryClient.invalidateQueries({ queryKey: queryKeys.openChecks });
   };
 
+  /**
+   * Mark a round as carried to the table.
+   *
+   * Goes through the same `adopt` as everything else, so the round's clock
+   * stops on this screen and the table's tile in the pane beside it loses its
+   * timer in the same frame — they are two views of one cached check.
+   */
+  const deliver = async (roundId: string) => {
+    const current = check();
+    if (!current) return;
+    setBusy(true);
+    setError(null);
+    try {
+      adopt(await deliverRound(current.id, roundId));
+    } catch (thrown) {
+      setError(thrown instanceof ApiError ? thrown.message : m().errors.generic);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const strike = async (itemId: string) => {
     const current = check();
     if (!current) return;
@@ -276,7 +298,14 @@ export function OrderPane() {
           on screen — but it never disappears, because a waiter adding a second
           round has to be able to see the first. */}
       <Show when={check()}>
-        {(current) => <SentRounds check={current()} busy={busy()} onVoid={strike} />}
+        {(current) => (
+          <SentRounds
+            check={current()}
+            busy={busy()}
+            onVoid={strike}
+            onDeliver={(roundId) => void deliver(roundId)}
+          />
+        )}
       </Show>
 
       <Show when={!categories.isPending} fallback={<Spinner />}>
@@ -514,19 +543,85 @@ export function OrderPane() {
  * trail and removing it would make the check disagree with the piece of paper
  * the kitchen has.
  */
-function SentRounds(props: { check: CheckDetail; busy: boolean; onVoid(itemId: string): void }) {
+function SentRounds(props: {
+  check: CheckDetail;
+  busy: boolean;
+  onVoid(itemId: string): void;
+  onDeliver(roundId: string): void;
+}) {
   const { m } = useLocale();
   const app = useApp();
+  const now = createNow();
+
+  /**
+   * Where this round stands, recomputed as the clock ticks.
+   *
+   * The target came from the Worker, which built it with the Rust twin of
+   * `roundTargetMinutes` — so the number the waiter reads out and the number
+   * the server believes are one value rather than two that agree today.
+   */
+  const timing = (round: CheckDetail['rounds'][number]) =>
+    roundTiming({
+      sentAtMs: Date.parse(round.sentAt),
+      deliveredAtMs: round.deliveredAt === null ? null : Date.parse(round.deliveredAt),
+      targetMinutes: round.targetMinutes,
+      nowMs: now(),
+    });
 
   return (
-    <div style={{ 'max-height': '40%', overflow: 'auto' }}>
+    <div style={{ 'max-height': '45%', overflow: 'auto' }}>
       <For each={props.check.rounds}>
         {(round) => (
-          <div class="sent-round">
+          <div class="sent-round" data-state={timing(round).state}>
             <div class="sent-round-head">
               <span>{m().waiter.round(round.seq)}</span>
               <span>{m().waiter.sentAt(app.clock(round.sentAt))}</span>
               <span>{round.sentByName}</span>
+            </div>
+
+            {/*
+              The line the waiter reads out loud, and the button that ends it.
+
+              A delivered round says how long it took and stops there — there is
+              nothing left to do about it, and the elapsed number is what a
+              manager would want later. One that is still out counts down to
+              what was promised, then up past it.
+            */}
+            <div class="round-timing" data-state={timing(round).state}>
+              <Show
+                when={round.deliveredAt === null}
+                fallback={
+                  <>
+                    <span class="badge" data-tone="ok">
+                      {m().timing.delivered}
+                    </span>
+                    <span>{m().timing.took(timing(round).elapsedMinutes)}</span>
+                    <Show when={round.deliveredByName}>
+                      {(carrier) => <span>{carrier()}</span>}
+                    </Show>
+                  </>
+                }
+              >
+                <span>
+                  {timing(round).remainingMinutes > 0
+                    ? m().timing.readyIn(timing(round).remainingMinutes)
+                    : timing(round).remainingMinutes === 0
+                      ? m().timing.readyNow
+                      : m().timing.overdueBy(Math.abs(timing(round).remainingMinutes))}
+                </span>
+                <Show when={timing(round).state === 'late'}>
+                  <span class="badge" data-tone="warn">
+                    {m().timing.late}
+                  </span>
+                </Show>
+                <Button
+                  variant="tonal"
+                  disabled={props.busy}
+                  onClick={() => props.onDeliver(round.id)}
+                >
+                  {m().timing.delivered}
+                </Button>
+              </Show>
             </div>
             <For each={round.items}>
               {(item) => (

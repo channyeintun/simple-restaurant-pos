@@ -55,12 +55,16 @@ INSERT OR IGNORE INTO categories (id, name, sort, active) VALUES
 -- Prices are minor units, and MMK has zero minor digits, so these numbers are
 -- kyat exactly: 2500 is 2,500 Ks and prints as "2,500 Ks". Nothing here is a
 -- fractional anything, which is the whole reason money is an integer.
-INSERT OR IGNORE INTO products (id, category_id, name, price_minor, sort, active) VALUES
-  ('prd_chicken_curry', 'cat_curry', 'Chicken curry', 4500, 1, 1),
-  ('prd_pork_curry', 'cat_curry', 'Pork curry', 5000, 2, 1),
-  ('prd_tealeaf_salad', 'cat_curry', 'Tea leaf salad', 3000, 3, 1),
-  ('prd_mohinga', 'cat_noodles', 'Mohinga', 2500, 1, 1),
-  ('prd_shan_noodles', 'cat_noodles', 'Shan noodles', 3000, 2, 1),
-  ('prd_fried_rice', 'cat_noodles', 'Egg fried rice', 3500, 3, 1),
-  ('prd_tea', 'cat_drinks', 'Myanmar tea', 800, 1, 1),
-  ('prd_water', 'cat_drinks', 'Bottled water', 500, 2, 1);
+-- `prep_minutes` is the sixth column, and the numbers are the point of the
+-- seed rather than decoration: a salad and a bottle of water are not the same
+-- wait as a pork curry, and a menu where everything takes ten minutes makes the
+-- whole timing feature say nothing. Set yours from the backoffice.
+INSERT OR IGNORE INTO products (id, category_id, name, price_minor, prep_minutes, sort, active) VALUES
+  ('prd_chicken_curry', 'cat_curry', 'Chicken curry', 4500, 15, 1, 1),
+  ('prd_pork_curry', 'cat_curry', 'Pork curry', 5000, 20, 2, 1),
+  ('prd_tealeaf_salad', 'cat_curry', 'Tea leaf salad', 3000, 5, 3, 1),
+  ('prd_mohinga', 'cat_noodles', 'Mohinga', 2500, 10, 1, 1),
+  ('prd_shan_noodles', 'cat_noodles', 'Shan noodles', 3000, 12, 2, 1),
+  ('prd_fried_rice', 'cat_noodles', 'Egg fried rice', 3500, 8, 3, 1),
+  ('prd_tea', 'cat_drinks', 'Myanmar tea', 800, 2, 1, 1),
+  ('prd_water', 'cat_drinks', 'Bottled water', 500, 0, 2, 1);

@@ -372,3 +372,49 @@ export function usePrintJobs(status: PrintJobStatus, enabled = true) {
     retry: retryUnlessUnauthorized,
   }));
 }
+
+/**
+ * The queue nobody is emptying.
+ *
+ * There is a hole in the failure story that the red banner cannot cover, and
+ * this is it. A job is only `failed` once the agent has *tried* it three times
+ * — so if the machine running the agent is switched off, or its process died,
+ * or somebody unplugged it from the network, every ticket sits at `pending`
+ * forever and the cashier's screen says nothing at all. The kitchen simply
+ * stops receiving orders, and the first anybody knows is a table asking where
+ * their food is.
+ *
+ * With the agent running, a dead printer resolves in about twenty seconds:
+ * three attempts with backoff, then `failed`, then the red banner. So a job
+ * that has been pending for minutes means something quite specific — **nothing
+ * is polling** — and that is worth saying out loud.
+ *
+ * ## Why this has its own cadence
+ *
+ * Thirty seconds, on its own timer, rather than riding the cashier's existing
+ * refresh. Two reasons, and the second is the real one:
+ *
+ *   * "the agent is down" is not a five-second-urgency signal. It has either
+ *     been true for a while or it is about to be.
+ *   * the existing refresh is the *fallback* path — when the stream is live it
+ *     barely fires, which is exactly when this query would never run. A stuck
+ *     queue is no less likely on a tablet whose realtime is working.
+ *
+ * 2,880 requests a day against a 100,000/day tier, which is the sort of number
+ * the budget in `CLAUDE.md` does not notice.
+ */
+export function useStuckQueue() {
+  return useQuery(() => ({
+    queryKey: queryKeys.printJobs('pending'),
+    queryFn: ({ signal }) => listPrintJobs('pending', signal),
+    /*
+     * `refetchIntervalInBackground` is left at its default of false, so a
+     * tablet that has been put face down stops asking. It is the same rule the
+     * realtime stream follows — a hidden page costs nothing — and the answer
+     * cannot be acted on by somebody who is not looking at the screen.
+     */
+    refetchInterval: 30_000,
+    staleTime: 0,
+    retry: retryUnlessUnauthorized,
+  }));
+}

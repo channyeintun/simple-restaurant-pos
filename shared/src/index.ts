@@ -15,6 +15,7 @@ export * from './models.js';
 export * from './events.js';
 export * from './money.js';
 export * from './totals.js';
+export * from './timing.js';
 export * from './ticket.js';
 export * from './time.js';
 export * from './i18n/index.js';

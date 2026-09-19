@@ -35,6 +35,9 @@ const card = (over: Partial<CheckSummary> = {}): CheckSummary => ({
   openedByName: 'Su',
   openedAt: '2026-09-18T13:00:00.000Z',
   roundCount: 1,
+  outstandingRounds: 1,
+  oldestOutstandingAt: '2026-09-18T13:00:00.000Z',
+  oldestOutstandingTargetMinutes: 15,
   totalMinor: 11_400,
   ...over,
 });
@@ -45,16 +48,52 @@ const opened = (checkId: string, tableId: string | null): RealtimeEvent => ({
   data: { checkId, tableId, staffName: 'Su', at: '2026-09-18T13:00:00.000Z' },
 });
 
-const sent = (checkId: string, seq: number, total: number): RealtimeEvent => ({
+const line = (prepMinutesSnapshot: number) => ({
+  id: 'itm_1',
+  roundId: 'rnd_1',
+  productId: 'prd_1',
+  nameSnapshot: 'Chicken curry',
+  priceMinorSnapshot: 4_500,
+  prepMinutesSnapshot,
+  qty: 1,
+  note: null,
+  voidedAt: null,
+  voidedBy: null,
+});
+
+const sent = (
+  checkId: string,
+  seq: number,
+  total: number,
+  prepMinutes: number[] = [15],
+): RealtimeEvent => ({
   name: 'round.sent',
   channel: 'restaurant',
   data: {
     checkId,
     roundId: `rnd_${seq}`,
     seq,
-    items: [],
+    items: prepMinutes.map(line),
     checkTotal: total,
     at: '2026-09-18T13:05:00.000Z',
+  },
+});
+
+const delivered = (
+  checkId: string,
+  outstandingRounds: number,
+  oldestOutstandingAt: string | null,
+  oldestOutstandingTargetMinutes = 0,
+): RealtimeEvent => ({
+  name: 'round.delivered',
+  channel: 'restaurant',
+  data: {
+    checkId,
+    roundId: 'rnd_1',
+    at: '2026-09-18T13:20:00.000Z',
+    outstandingRounds,
+    oldestOutstandingAt,
+    oldestOutstandingTargetMinutes,
   },
 });
 
@@ -83,7 +122,15 @@ const printed: RealtimeEvent = {
 check(
   'an opened check lands on the board at zero',
   applyBoardEvent([], opened('chk_1', 'tbl_4'), tableNameFor),
-  [card({ roundCount: 0, totalMinor: 0 })],
+  [
+    card({
+      roundCount: 0,
+      totalMinor: 0,
+      outstandingRounds: 0,
+      oldestOutstandingAt: null,
+      oldestOutstandingTargetMinutes: 0,
+    }),
+  ],
 );
 
 // The event carries the table's id, not its name — the catalogue is six events
@@ -113,7 +160,27 @@ check(
 check(
   'a sent round adopts the total the Worker sent',
   applyBoardEvent([card({ roundCount: 1, totalMinor: 11_400 })], sent('chk_1', 2, 13_900), tableNameFor),
-  [card({ roundCount: 2, totalMinor: 13_900 })],
+  [card({ roundCount: 2, totalMinor: 13_900, outstandingRounds: 2 })],
+);
+
+// A check with something already out does not restart its clock because a
+// second round was sent — the oldest one is still the oldest.
+check(
+  'a second round leaves the oldest clock alone',
+  applyBoardEvent([card()], sent('chk_1', 2, 13_900), tableNameFor).map((c) => c.oldestOutstandingAt),
+  ['2026-09-18T13:00:00.000Z'],
+);
+
+// But a check with nothing out starts its clock on this round, and takes the
+// target from the round's own lines via the twinned `roundTargetMinutes`.
+const idle = card({ outstandingRounds: 0, oldestOutstandingAt: null, oldestOutstandingTargetMinutes: 0 });
+check(
+  'the first round out starts the clock',
+  applyBoardEvent([idle], sent('chk_1', 3, 20_000, [2, 15, 8]), tableNameFor).map((c) => ({
+    at: c.oldestOutstandingAt,
+    target: c.oldestOutstandingTargetMinutes,
+  })),
+  [{ at: '2026-09-18T13:05:00.000Z', target: 15 }],
 );
 
 // `seq` is authoritative over the running count, so a card that missed an event
@@ -152,6 +219,40 @@ check(
 // The printer's two say nothing about a total or a state; they belong to the
 // banner, against a different query.
 
+// --- delivery ---------------------------------------------------------------
+// The payload is absolute state, not a decrement, so applying it is a copy
+// rather than arithmetic — and a board that missed a send while its stream was
+// down is corrected here instead of compounding the error.
+
+check(
+  'a delivery adopts the count the Worker sent',
+  applyBoardEvent([card({ outstandingRounds: 3 })], delivered('chk_1', 2, '2026-09-18T13:10:00.000Z', 20), tableNameFor),
+  [card({ outstandingRounds: 2, oldestOutstandingAt: '2026-09-18T13:10:00.000Z', oldestOutstandingTargetMinutes: 20 })],
+);
+
+// The last round out clears the clock entirely: a table waiting for its bill
+// rather than for its food.
+check(
+  'the last delivery clears the clock',
+  applyBoardEvent([card()], delivered('chk_1', 0, null), tableNameFor),
+  [card({ outstandingRounds: 0, oldestOutstandingAt: null, oldestOutstandingTargetMinutes: 0 })],
+);
+
+// It corrects a count that drifted while the stream was down, rather than
+// decrementing a number it has no reason to trust.
+check(
+  'it corrects a drifted count rather than decrementing',
+  applyBoardEvent([card({ outstandingRounds: 99 })], delivered('chk_1', 1, '2026-09-18T13:02:00.000Z', 12), tableNameFor)
+    .map((c) => c.outstandingRounds),
+  [1],
+);
+
+check(
+  'a delivery leaves the total alone — food arriving is not paying for it',
+  applyBoardEvent([card({ totalMinor: 11_400 })], delivered('chk_1', 0, null), tableNameFor).map((c) => c.totalMinor),
+  [11_400],
+);
+
 check(
   'a printed job leaves the board alone',
   applyBoardEvent([card()], printed, tableNameFor),
@@ -179,6 +280,9 @@ check('a round for a known check does not', boardNeedsRefetch([card()], sent('ch
 // event describes.
 check('paying a check that is not here does not', boardNeedsRefetch([card()], paid('chk_9', null)), false);
 check('opening a check never does', boardNeedsRefetch([], opened('chk_9', 'tbl_4')), false);
+// A delivery for a check the board does not have means it is missing a card,
+// not that it is showing a wrong clock — nothing to correct by asking.
+check('a delivery never does', boardNeedsRefetch([card()], delivered('chk_9', 0, null)), false);
 check('a printer event never does', boardNeedsRefetch([], printed), false);
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

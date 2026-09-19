@@ -64,6 +64,28 @@ export const en = {
     admin: 'Manager',
   },
 
+  /**
+   * How long a round has taken, and what to call that.
+   *
+   * Its own block rather than living under `waiter`, because the cashier's
+   * board reads the same words about the same rounds — and two blocks would be
+   * two places for "Late" to end up worded differently on two screens that a
+   * manager looks at side by side.
+   */
+  timing: {
+    /** The button a waiter taps, and the badge it leaves behind. */
+    delivered: 'Delivered',
+    due: 'Due now',
+    late: 'Late',
+    minutes: (count: number) => `${count} min`,
+    overdueBy: (count: number) => `${count} min over`,
+    /** What the waiter reads out to the customer. */
+    readyIn: (count: number) => `about ${count} min`,
+    readyNow: 'any moment now',
+    took: (count: number) => `took ${count} min`,
+    nothingOut: 'Nothing waiting',
+  },
+
   waiter: {
     tables: 'Tables',
     free: 'Free',
@@ -122,6 +144,14 @@ export const en = {
     printFailedLine: (table: string, error: string) => `${table} — ${error}`,
     printFailedNoReason: 'the printer did not say why',
     retryPrint: 'Print again',
+    soundOn: 'Sound on',
+    soundOff: 'Sound off',
+    // Amber, not red, and the wording carries the difference. Red means the
+    // kitchen definitely never got it; this means nothing has even tried to
+    // print, which is a different thing to go and check.
+    queueStuck: (minutes: number) =>
+      `Nothing has printed for ${minutes} minutes — check the kitchen printer`,
+    queueStuckBody: 'Orders are queued and will print by themselves once it is back.',
   },
 
   backoffice: {
@@ -156,7 +186,12 @@ export const en = {
       price: 'Price',
       category: 'Category',
       role: 'Role',
+      prep: 'Prep minutes',
     },
+    // The number the whole timing feature is built on, so the hint says what it
+    // is *for* rather than what it is: a manager who reads "how long the
+    // kitchen takes" types a better number than one who reads "prep time".
+    prepHint: 'Roughly how long the kitchen takes. It is what a waiter quotes.',
     // The sort field is a number somebody types, because a touch screen has no
     // good drag-to-reorder and inventing a gesture nobody will guess is worse
     // than a field with a hint under it.

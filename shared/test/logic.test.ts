@@ -9,6 +9,7 @@ import {
 } from '../src/time.ts';
 import { checkTotalMinor, lineTotalMinor } from '../src/totals.ts';
 import { renderTicket } from '../src/ticket.ts';
+import { LATE_GRACE_MINUTES, roundTargetMinutes, roundTiming } from '../src/timing.ts';
 import type { Currency } from '../src/config.ts';
 
 /**
@@ -320,6 +321,75 @@ check(
   renderTicket(ticketInput('ticket', 1, 'Table 1', [{ qty: 1, name: 'a'.repeat(60), note: null }]), MM)
     .lines[0]!.name.length,
   60,
+);
+
+// --- how long a round should take ------------------------------------------
+// `roundTargetMinutes` has a Rust twin in api/core/src/timing.rs and every case
+// below is written out there with the same numbers.
+
+const prep = (...minutes: number[]) => minutes.map((m) => ({ prepMinutesSnapshot: m }));
+
+check("a round's target is its slowest dish", roundTargetMinutes(prep(2, 15, 5)), 15);
+check('one dish is its own target', roundTargetMinutes(prep(15)), 15);
+// Not a sum: three drinks take as long as one drink.
+check('three drinks do not take three times as long', roundTargetMinutes(prep(2, 2, 2)), 2);
+check('a round with no lines is due at once', roundTargetMinutes([]), 0);
+check('a zero-minute dish does not lower the target', roundTargetMinutes(prep(0, 12)), 12);
+check('a round of only zero-minute dishes', roundTargetMinutes(prep(0)), 0);
+
+// --- where a round stands --------------------------------------------------
+// TypeScript only, and `timing.ts` says why: this is a function of *now*, it is
+// re-evaluated every second in a browser, and the Worker never renders it.
+
+const SENT = 1_789_736_400_000; // 2026-09-18T13:00:00Z, the instant the other cases use.
+const at = (minutesLater: number, deliveredAtMs: number | null = null) =>
+  roundTiming({
+    sentAtMs: SENT,
+    deliveredAtMs,
+    targetMinutes: 15,
+    nowMs: SENT + minutesLater * 60_000,
+  });
+
+check('just sent', at(0).state, 'cooking');
+check('and the whole target is still to run', at(0).remainingMinutes, 15);
+check('halfway', at(7).state, 'cooking');
+check('and it says how long is left', at(7).remainingMinutes, 8);
+// `due` at the target exactly, and `remaining` hits zero in the same minute —
+// they are derived from one floored value so they cannot disagree.
+check('due on the minute it was promised', at(15).state, 'due');
+check('with nothing left to run', at(15).remainingMinutes, 0);
+check('still only due four minutes past', at(19).state, 'due');
+check('and says how far overdue', at(19).remainingMinutes, -4);
+// Five minutes of grace, added rather than multiplied — the same five whether
+// the dish takes two minutes or forty.
+check('late five minutes past', at(20).state, 'late');
+check('the grace is five minutes', LATE_GRACE_MINUTES, 5);
+
+// A fast dish gets the same five minutes, which a 1.5x factor would not give
+// it: a two-minute drink would be "late" after three.
+const drink = (minutesLater: number) =>
+  roundTiming({ sentAtMs: SENT, deliveredAtMs: null, targetMinutes: 2, nowMs: SENT + minutesLater * 60_000 });
+check('a drink is due at two minutes', drink(2).state, 'due');
+check('and not late until seven', drink(6).state, 'due');
+check('late at seven', drink(7).state, 'late');
+
+// Delivered wins over every other reading: there is nothing to *do* about a
+// plate already on the table, however long it took to get there.
+check('a delivered round is delivered, not late', at(40, SENT + 40 * 60_000).state, 'delivered');
+check('and still records how long it took', at(40, SENT + 40 * 60_000).elapsedMinutes, 40);
+check('delivered early is delivered too', at(3, SENT + 3 * 60_000).state, 'delivered');
+
+// A tablet syncing its clock, or a round stamped in the future: clamp rather
+// than report that something was sent in four minutes' time.
+check('a backwards clock clamps to zero', at(-4).elapsedMinutes, 0);
+check('and is still cooking', at(-4).state, 'cooking');
+
+// Seconds are floored, so a round is not late a minute early.
+check(
+  'fifty-nine seconds is still zero minutes',
+  roundTiming({ sentAtMs: SENT, deliveredAtMs: null, targetMinutes: 15, nowMs: SENT + 59_000 })
+    .elapsedMinutes,
+  0,
 );
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

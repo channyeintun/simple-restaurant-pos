@@ -49,11 +49,13 @@ simple-restaurant-pos/
 │   ├── models.ts     domain models + request validation
 │   ├── events.ts     the six realtime events, defined once
 │   ├── money.ts      integer minor units, no floats
+│   ├── totals.ts     what a check comes to, voided lines skipped
+│   ├── timing.ts     how long a round should take, and when it is late
 │   ├── time.ts       fixed-offset local time, like futsal's ICT handling
 │   ├── ticket.ts     what a kitchen ticket says, as data
 │   └── i18n/         message catalogues; English is the source of truth
 ├── api/         Rust on Cloudflare Workers
-│   ├── core/         the pure crate: money, ticket, totals, clock
+│   ├── core/         the pure crate: money, ticket, totals, timing, clock
 │   ├── migrations/   versioned D1 SQL
 │   └── src/routes/
 ├── web/         Solid + Vite + Material Design 3, on Cloudflare Pages
@@ -102,7 +104,7 @@ simple-restaurant-pos/
 
 ## Domain model
 
-`api/migrations/0001_init.sql`. Conventions are the reference's: application-generated
+`api/migrations/`. Conventions are the reference's: application-generated
 `TEXT` ids with a type prefix, ISO-8601 UTC timestamps as `TEXT`, booleans as `INTEGER`
 0/1, money as `INTEGER` minor units.
 
@@ -111,20 +113,27 @@ staff       (id, name, pin_hash, role waiter|cashier|admin, active, created_at)
 devices     (id, name, claimed_at)
 tables      (id, name, sort, active)
 categories  (id, name, sort, active)
-products    (id, category_id, name, price_minor, sort, active)
+products    (id, category_id, name, price_minor, prep_minutes, sort, active)
 checks      (id, table_id NULL, opened_by, status open|paid|voided, opened_at, closed_at)
-rounds      (id, check_id, seq, sent_by, sent_at)
-items       (id, round_id, product_id, name_snapshot, price_minor_snapshot, qty, note,
-             voided_at, voided_by)
+rounds      (id, check_id, seq, sent_by, sent_at, client_key, delivered_at, delivered_by)
+items       (id, round_id, product_id, name_snapshot, price_minor_snapshot,
+             prep_minutes_snapshot, qty, note, voided_at, voided_by)
 payments    (id, check_id, method cash|card|other, amount_minor, taken_by, at)
-print_jobs  (id, round_id, kind ticket|void, status pending|printed|failed, attempts,
+print_jobs  (id, round_id, item_id, kind ticket|void, status pending|printed|failed, attempts,
              last_error, created_at, printed_at)
 ```
 
 `devices` additionally carries `claim_nonce`, `claim_expires_at` and `token_version`, the
 same three columns `members` grew in futsal's migration 0004 — the claim link and the
 revocation check are the reference's, so the columns they read have to exist. They go in
-`0001_init.sql` rather than a later migration: this schema has no history to preserve.
+`0001_init.sql` rather than a later migration: at the time that schema had no history
+to preserve. It has one now — `0002_send_and_void.sql` adds `rounds.client_key`, which
+is how a re-sent round is recognised as the same tap rather than a second dinner, and
+`print_jobs.item_id`, without which two strikes off one round print the same void slip
+twice. `0003_timing.sql` adds `products.prep_minutes`, its snapshot on `items`, and
+`rounds.delivered_at`/`delivered_by`. Each is a new file rather than an edit, because
+0001 has a real `database_id` behind it and a deploy workflow that applies migrations by
+name.
 
 ### Rules
 
@@ -143,7 +152,18 @@ revocation check are the reference's, so the columns they read have to exist. Th
   code, symbol and minor-unit digits come from wrangler vars (see below).
 - **Voiding an item on a sent round** creates a `void` print job, so the kitchen learns.
   Voiding is never a delete: `voided_at` and `voided_by` are set and the row stays.
-- There are **no preparing/ready states**. The kitchen has a printer, not a screen.
+- There are **no preparing/ready states**, because the kitchen has a printer rather
+  than a screen and no cook touches this software. That rule stands, and the timing
+  added in `0003_timing.sql` does not break it: `prep_minutes` is a number a manager
+  types, and `delivered_at` is set by the **waiter** on their own tablet when they
+  carry the food out. Both are facts the floor already had; neither is the kitchen
+  reporting progress, and a kitchen display is still out of scope.
+- A round's target is the **slowest dish on it** — `round_target_minutes`, twinned —
+  because a round is one trip to the table and is not finished until the last thing on
+  it is. Never a sum: three drinks take as long as one drink. Whether that target has
+  been missed is `roundTiming`, which is TypeScript only and says in its own doc why:
+  it is a function of *now*, redrawn every fifteen seconds in a browser, and the Worker
+  never renders it.
 - Time is a **fixed offset** from a wrangler var, handled the way futsal handles ICT: a
   constant, not a timezone database. Myanmar is UTC+06:30, which is why the var is
   `TZ_OFFSET_MINUTES` and not hours.
@@ -206,8 +226,13 @@ So:
   opened. A waiter is looking at one table at a time and has just caused the change they
   are looking at.
 - **The printer agent never subscribes.** It polls `GET /print-jobs?status=pending`
-  every 3 s and acks with `POST /print-jobs/:id/{printed|failed}`. Unacked jobs stay
+  and acks with `POST /print-jobs/:id/{printed|failed}`. Unacked jobs stay
   pending, which is what makes an agent restart or a power cut self-healing.
+  The cadence is a ladder, not a constant: 3 s while tickets are moving, 10 s
+  after five minutes of nothing, 30 s after thirty, and back to 3 s on any job.
+  Subscribing would move the cost from Worker requests (100,000 a *day*) to
+  Upstash commands (500,000 a *month*, billed 360/hour for silence), which is
+  spending the scarce budget to save the abundant one.
 - **Cashier polling fallback is 5 s**, not the reference's 30. A cashier waiting on a
   table's total is a person standing still.
 - **Cashier stream idle timeout is 4 h**, not the reference's 5 minutes. Page-hidden still
@@ -227,8 +252,10 @@ One event costs 3 commands (`XADD` + `EXPIRE` + `PUBLISH`); a client connecting 
 (`XREVRANGE` replay). The 4-hour idle timeout is worth 1,440 commands before it gives up,
 which is the price of not making the cashier reconnect during a quiet afternoon.
 
-Workers' 100,000 requests/day is not a constraint: the agent's 3-second poll is 14,400 a
-day and the cashier's fallback is 8,640, with the waiter tablets in the hundreds. D1's
+Workers' 100,000 requests/day is not a constraint: the agent is about 17,000 a day on
+the ladder above (28,800 if it ever went flat out at 3 s around the clock), the
+cashier's fallback is 8,640 and its stuck-queue check 2,880, with the waiter tablets in
+the hundreds. D1's
 100,000 rows written/day is not either — a whole check is about 20 rows.
 
 > Free-tier limits change. These were correct when written; check the current Cloudflare
@@ -252,11 +279,20 @@ spend the budget this design exists to protect.
 ```
 check.opened      { checkId, tableId, staffName, at }
 round.sent        { checkId, roundId, seq, items[], checkTotal, at }
+round.delivered   { checkId, roundId, at, outstandingRounds, oldestOutstandingAt,
+                    oldestOutstandingTargetMinutes }
 item.voided       { checkId, itemId, checkTotal, at }
 check.paid        { checkId, tableId, method, at }
 print_job.failed  { jobId, roundId, tableId, error, at }
 print_job.printed { jobId, roundId, at }
 ```
+
+It was six and is now seven. `round.delivered` is the only one recorded by a person
+rather than caused by one — every other event here is the consequence of a tap that
+also did something else — and it earns its place because the cashier's board counts
+what is still out, which without it would only correct itself on a reconnect. Its
+payload carries **absolute** state rather than a decrement, which is also what
+self-heals a count that drifted while a stream was down.
 
 The channel allowlist in `routes/realtime.rs` is exactly `restaurant` — the reference's
 `is_subscribable` exists to stop a crafted `channels` value naming an arbitrary Redis
@@ -293,6 +329,11 @@ These are requirements, not suggestions.
   per line, the total, and one **Send to kitchen** button. No cart icon, no separate
   review screen, **no "are you sure" on send**.
 - An occupied table shows its open check — rounds and total — with **Add items**.
+- Every round that is still out shows **how long is left of what was promised**, so a
+  waiter can answer "how long will it be" without guessing, and a **Delivered** button
+  that stops that round's clock. A table's tile carries the oldest outstanding round's
+  countdown, and goes **red** once it is five minutes past — which is the one thing on
+  that grid a waiter has to see from across a room without looking for it.
 - The draft cart persists in `localStorage` **per table**. On connection loss, show a
   banner with Retry and never lose the draft. No offline sync in V1.
 - Touch targets ≥ 48 px. Nothing hover-only. No drag-and-drop. Confirmation only for
@@ -302,7 +343,15 @@ These are requirements, not suggestions.
 
 Open checks as large cards by table with totals. Opening a check shows its items; from
 there: void an item, take payment (cash/card/other), close. A **red banner when print
-jobs fail**, with a Retry that re-queues them.
+jobs fail**, with a Retry that re-queues them, and an **amber one when nothing has
+printed for two minutes** — a job is only `failed` once the agent has *tried* it, so an
+agent whose machine is switched off leaves every ticket `pending` and the red banner
+silent.
+
+It is also the **one screen in the app that makes a noise**: a short ping on
+`round.sent`, from `/sounds/new-order.mp3`, with an on/off remembered per device. The
+till is always on and at a counter; waiter tablets are carried between tables and stay
+silent, which is what the platform seam's note about a dining room was really about.
 
 ### Backoffice
 
@@ -318,8 +367,17 @@ Rust cannot import a TypeScript module, so every pure rule is written **twice** 
 **the same test cases on both sides**. A rule that changes has to change in two places and
 prove itself twice.
 
-Today that covers money, check totals, and ticket rendering. Anything else that is a rule
-rather than plumbing joins them.
+Today that covers money, the fixed-offset clock, check totals, ticket rendering and how
+long a round should take — `money.rs`/`money.ts`, `clock.rs`/`time.ts`,
+`totals.rs`/`totals.ts`, `ticket.rs`/`ticket.ts` and `timing.rs`/`timing.ts`. Anything
+else that is a rule rather than plumbing joins them.
+
+The timing pair is the one **partial** twin, and deliberately: only
+`round_target_minutes` exists on both sides, because only both sides compute it. The
+"is it late" half is a function of the current second, evaluated in a browser on a
+timer, and a Rust copy nothing called would be dead code in a crate whose whole
+discipline is that it holds rules somebody could be shown on paper. Both files say so
+where the seam is.
 
 `api/core/` must not depend on `worker`, `wasm-bindgen` or the host, so `cargo test` runs
 it natively.
@@ -352,8 +410,12 @@ Match the reference's code style, comment style and naming. Concretely:
 - **Every browser-only API goes through `platform/`.** Components never touch `window`,
   `document`, `localStorage`, `navigator` or `EventSource` directly.
 - **Every network call goes through `web/src/api/`.** No component builds a URL.
-- **Destructive actions go through a confirm dialog naming the consequence** — here that
-  is exactly clear-cart and void.
+- **Destructive actions go through a confirm dialog naming the consequence.** That was
+  clear-cart and void when this was written; it is now five, all through the same
+  `ConfirmButton`, because a screen where one control asks and the one beside it does
+  not is a screen where nobody learns which taps are safe. The other three are
+  discarding an unconfirmed send, retiring a catalogue row, and signing a tablet out
+  from the backoffice.
 
 ### Commands
 

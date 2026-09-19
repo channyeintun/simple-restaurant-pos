@@ -172,6 +172,49 @@ export interface Install {
  */
 export type AppUpdated = (listener: () => void) => () => void;
 
+/**
+ * The one noise this app makes.
+ *
+ * The seam this is descended from dropped sound outright, with the reasoning
+ * that a dining room is not a place to add noise to — and that is still right
+ * about the *waiter's* tablets, which are carried between tables and stay
+ * silent. This is for the till: one screen, at a counter, where somebody needs
+ * to know an order has gone to the kitchen without watching the board.
+ *
+ * Three things make it awkward enough to be worth solving once, here.
+ *
+ * **Browsers refuse to play audio until the page has been interacted with.**
+ * Not a bug and not avoidable: an autoplay policy that could be talked out of
+ * would not be a policy. So {@link Sound.prime} exists to be called from inside
+ * a real gesture — `visibility.onInteraction` fires on `pointerdown` and
+ * `keydown`, which both qualify — and it plays each clip muted and immediately
+ * pauses it, which is what marks the element as user-activated for the rest of
+ * the page's life.
+ *
+ * **It has to be switchable off, and remember.** A till in a small room at
+ * eight in the evening is a different place from the same till at lunchtime,
+ * and a sound somebody cannot turn off is a sound somebody unplugs the speaker
+ * over. The preference is per device, like the language.
+ *
+ * **It has to fail silently.** The file is supplied by whoever runs the
+ * restaurant and may simply not be there; a missing clip must cost a rejected
+ * promise nobody sees, never an error on a screen that is taking money.
+ */
+export type SoundName = 'newOrder';
+
+export interface Sound {
+  /**
+   * Unlock playback, from inside a user gesture. Calling it anywhere else is
+   * harmless and does nothing; calling it twice is harmless too.
+   */
+  prime(): void;
+  /** Play it, if sound is on and the clip exists. Never throws. */
+  play(name: SoundName): void;
+  /** Whether this device wants to hear anything. Defaults to on. */
+  enabled(): boolean;
+  setEnabled(on: boolean): void;
+}
+
 export interface Platform {
   storage: KeyValueStorage;
   clipboard: Clipboard;
@@ -182,6 +225,7 @@ export interface Platform {
   registerServiceWorker(): Promise<boolean>;
   install: Install;
   onAppUpdated: AppUpdated;
+  sound: Sound;
   openExternal(url: string): void;
   openEventStream(url: string, handlers: EventStreamHandlers): EventStream;
   /**

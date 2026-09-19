@@ -8,16 +8,18 @@
 //! ## The doc carries no words
 //!
 //! Not a line of prose, and that is the design rather than an omission. A
-//! [`TicketDoc`] is a round number, a table, a time, a name and some lines; the
-//! labels around them — "ROUND", "VOID", "Takeaway" — come from the i18n
-//! catalogue in `shared/` at the moment of printing, which is what lets a
-//! restaurant print its tickets in Burmese without this module and its
-//! TypeScript twin holding a message catalogue each.
+//! [`TicketDoc`] is a round number, a table, a time, a name and some lines. The
+//! labels around them — "ROUND", "VOID", "TAKEAWAY", "TABLE" and the waiter's
+//! line — belong to the **agent**, in `agent/src/index.ts`, next to the ESC/POS
+//! bytes that draw them.
 //!
-//! It also draws the line in the right place. What a ticket *says* is a rule
-//! and lives twice; what it *is* on the wire — the bytes, the font size, where
-//! the paper is cut — belongs to the agent alone, and so does which language
-//! the labels are in.
+//! That draws the line in the right place. What a ticket *says* is a rule and
+//! lives twice, here and in `shared/src/ticket.ts`; what it *is* on the wire —
+//! the bytes, the font size, where the paper is cut, and the words themselves —
+//! belongs to the one thing that knows what a printer can render. Which is not
+//! much: a thermal printer's built-in character set has no Myanmar glyphs, so
+//! those five labels are English, and the README says so under Known
+//! limitations.
 //!
 //! ## The time is the restaurant's
 //!

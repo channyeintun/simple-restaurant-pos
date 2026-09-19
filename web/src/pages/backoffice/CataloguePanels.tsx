@@ -296,6 +296,7 @@ export function ProductsPanel() {
   const [adding, setAdding] = createSignal(false);
   const [name, setName] = createSignal('');
   const [price, setPrice] = createSignal('');
+  const [prep, setPrep] = createSignal('');
   const [sort, setSort] = createSignal('');
   const [categoryId, setCategoryId] = createSignal<string | null>(null);
   /** Null is "all", and it is the chip the screen opens on. */
@@ -319,6 +320,7 @@ export function ProductsPanel() {
   const openAdd = () => {
     setName('');
     setPrice('');
+    setPrep('');
     setSort('');
     // Whatever is being filtered by is the likeliest category for the next
     // product, and the first category otherwise — a manager adding three
@@ -331,6 +333,7 @@ export function ProductsPanel() {
   const openEdit = (product: Product) => {
     setName(product.name);
     setPrice(app.amount(product.priceMinor));
+    setPrep(String(product.prepMinutes));
     setSort(String(product.sort));
     setCategoryId(product.categoryId);
     action.setError(null);
@@ -356,16 +359,27 @@ export function ProductsPanel() {
         if (priceMinor === null) throw new Error(m().backoffice.priceInvalid);
 
         const order = sort().trim() === '' ? undefined : Number(sort().trim());
+        // Blank means "leave it alone" on an edit and "take the default" on a
+        // create, which is what omitting the key does on both routes — the same
+        // rule the order field follows.
+        const prepMinutes = prep().trim() === '' ? undefined : Number(prep().trim());
         const current = editing();
         if (current) {
           await updateProduct(current.id, {
             categoryId: chosen,
             name: name(),
             priceMinor,
+            prepMinutes,
             sort: order,
           });
         } else {
-          await createProduct({ categoryId: chosen, name: name(), priceMinor, sort: order });
+          await createProduct({
+            categoryId: chosen,
+            name: name(),
+            priceMinor,
+            prepMinutes,
+            sort: order,
+          });
         }
       })
       .then((ok) => {
@@ -426,6 +440,7 @@ export function ProductsPanel() {
                       <>
                         <span class="money">{app.money(product.priceMinor)}</span>
                         <span>{categoryName().get(product.categoryId) ?? '—'}</span>
+                        <span>{m().timing.minutes(product.prepMinutes)}</span>
                         <Show when={!product.active}>
                           <Badge>{m().backoffice.retired}</Badge>
                         </Show>
@@ -480,6 +495,20 @@ export function ProductsPanel() {
           inputMode="numeric"
           supportingText={m().backoffice.priceHint(app.config().currency.symbol)}
           required
+        />
+
+        {/*
+          The number the whole timing feature rests on. Next to the price
+          because they are the two facts about a dish that are not its name, and
+          because a manager setting one is usually setting the other.
+        */}
+        <TextField
+          label={m().backoffice.fields.prep}
+          value={prep()}
+          onChange={setPrep}
+          inputMode="numeric"
+          supportingText={m().backoffice.prepHint}
+          maxLength={3}
         />
 
         <p class="form-label">{m().backoffice.fields.category}</p>

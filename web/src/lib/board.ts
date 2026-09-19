@@ -1,4 +1,4 @@
-import type { CheckSummary, RealtimeEvent } from '@pos/shared';
+import { type CheckSummary, type RealtimeEvent, roundTargetMinutes } from '@pos/shared';
 
 /**
  * The cashier's board, as a pure function of what it was and what just
@@ -75,6 +75,11 @@ export function applyBoardEvent(
           openedByName: event.data.staffName,
           openedAt: event.data.at,
           roundCount: 0,
+          // A check is opened by the same request that sends its first round,
+          // so the `round.sent` a beat behind this fills all four of these in.
+          outstandingRounds: 0,
+          oldestOutstandingAt: null,
+          oldestOutstandingTargetMinutes: 0,
           totalMinor: 0,
         },
       ];
@@ -85,17 +90,52 @@ export function applyBoardEvent(
       // the twin of the arithmetic this client would use — so it is adopted
       // rather than recomputed. The client never has to hold enough of a check
       // to add it up itself, which is the whole point of carrying it.
-      return patch(board, event.data.checkId, (check) => ({
-        ...check,
-        roundCount: Math.max(check.roundCount + 1, event.data.seq),
-        totalMinor: event.data.checkTotal,
-      }));
+      return patch(board, event.data.checkId, (check) => {
+        /*
+         * The round just sent is now the oldest outstanding one **only if
+         * there were none** — otherwise something earlier is still out and
+         * keeps the clock. That is why the count is checked rather than the
+         * timestamp: a check with three rounds out does not restart its timer
+         * because a fourth was sent.
+         *
+         * The target comes from the event's own lines with the twinned
+         * `roundTargetMinutes`, which is the whole reason `round.sent` carries
+         * full items rather than a trimmed copy.
+         */
+        const wasIdle = check.outstandingRounds === 0;
+        return {
+          ...check,
+          roundCount: Math.max(check.roundCount + 1, event.data.seq),
+          outstandingRounds: check.outstandingRounds + 1,
+          oldestOutstandingAt: wasIdle ? event.data.at : check.oldestOutstandingAt,
+          oldestOutstandingTargetMinutes: wasIdle
+            ? roundTargetMinutes(event.data.items)
+            : check.oldestOutstandingTargetMinutes,
+          totalMinor: event.data.checkTotal,
+        };
+      });
     }
 
     case 'item.voided': {
       return patch(board, event.data.checkId, (check) => ({
         ...check,
         totalMinor: event.data.checkTotal,
+      }));
+    }
+
+    case 'round.delivered': {
+      /*
+       * Absolute, not a decrement. The payload carries what the check still has
+       * out *after* the delivery — see `roundDeliveredSchema` — so a board that
+       * missed a send while its stream was down is corrected here rather than
+       * compounding the error, and the new oldest round arrives with it instead
+       * of having to be guessed at or fetched.
+       */
+      return patch(board, event.data.checkId, (check) => ({
+        ...check,
+        outstandingRounds: event.data.outstandingRounds,
+        oldestOutstandingAt: event.data.oldestOutstandingAt,
+        oldestOutstandingTargetMinutes: event.data.oldestOutstandingTargetMinutes,
       }));
     }
 
@@ -139,6 +179,13 @@ export function boardNeedsRefetch(
     case 'round.sent':
     case 'item.voided':
       return !board.some((check) => check.id === event.data.checkId);
+    /*
+     * `round.delivered` is deliberately not here even though it patches a check
+     * by id. Its payload is absolute state about a check, so arriving for one
+     * the board has never seen means the board is missing a card — and a card
+     * it does not have cannot be shown with a wrong clock. The next
+     * `round.sent` or the reconnect refresh brings it in.
+     */
     default:
       return false;
   }

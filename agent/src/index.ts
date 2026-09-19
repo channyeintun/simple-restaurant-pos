@@ -352,8 +352,62 @@ async function call<T>(
 
 /* ---------------------------------------------------------------- the loop */
 
-/** Every three seconds, all day: 14,400 requests against a 100,000/day tier. */
+/**
+ * How often to ask, when the restaurant is busy.
+ *
+ * Three seconds is chosen against one number: how long a waiter takes to walk
+ * from the table to the pass. It is comfortably under that, so the ticket is
+ * waiting when they arrive, and there is nothing to gain by going faster.
+ */
 const POLL_INTERVAL_MS = 3_000;
+
+/**
+ * How often to ask when nothing has been printing, and how long it takes to
+ * decide that.
+ *
+ * Polling at three seconds around the clock is 28,800 requests a day, and more
+ * than half of them happen while the building is empty. The tier is 100,000 a
+ * day so this was never going to break anything — but a third of a budget spent
+ * asking an empty restaurant whether it has any orders is the kind of thing
+ * that is fine until the day it is load-bearing, and it costs ten lines to not
+ * do it.
+ *
+ * Two steps down rather than a smooth curve, because the two cases are
+ * genuinely different and a curve would blur them:
+ *
+ *   * **Five minutes of nothing → ten seconds.** A lull mid-service. The
+ *     penalty is that the first ticket after the lull can be up to ten seconds
+ *     late instead of three — and a kitchen that has had no orders for five
+ *     minutes is a kitchen with nothing queued behind it, which is exactly when
+ *     seven seconds costs nothing.
+ *   * **Thirty minutes of nothing → thirty seconds.** Closed, or between
+ *     services. By the time this engages the restaurant has been quiet for half
+ *     an hour; nobody is standing at a pass waiting.
+ *
+ * Any job at all resets it to three seconds immediately, so the *second* ticket
+ * of an evening is always fast even if the first one waited. There is no state
+ * to get wrong: the ladder is a function of how many empty polls have happened
+ * in a row.
+ */
+const IDLE_STEPS = [
+  { afterEmptyPolls: (5 * 60) / 3, intervalMs: 10_000 },
+  { afterEmptyPolls: (30 * 60) / 3, intervalMs: 30_000 },
+];
+
+/**
+ * The gap before the next poll, given how long it has been quiet.
+ *
+ * Exported for `test/ticket.test.ts` — it is the one other piece of this file
+ * that is pure and worth pinning down, because an off-by-one in the ladder is
+ * invisible until somebody notices the kitchen is slow on a Friday.
+ */
+export function pollIntervalFor(consecutiveEmptyPolls: number): number {
+  let interval = POLL_INTERVAL_MS;
+  for (const step of IDLE_STEPS) {
+    if (consecutiveEmptyPolls >= step.afterEmptyPolls) interval = step.intervalMs;
+  }
+  return interval;
+}
 
 /**
  * The first pause after a failure, doubling from there. It starts at the poll
@@ -420,6 +474,16 @@ async function ack(
  */
 export async function run(config: AgentConfig): Promise<void> {
   let backoffMs = 0;
+  /*
+   * How long it has been quiet, counted in polls rather than in milliseconds.
+   *
+   * Separate from `backoffMs` and deliberately so: that one is about this
+   * process being in trouble and having to push less hard, and this one is
+   * about the restaurant being empty. They answer different questions and a
+   * single counter doing both would reset the wrong one — a printer failure
+   * would look like a busy evening and undo the idle ladder.
+   */
+  let emptyPolls = 0;
 
   for (;;) {
     try {
@@ -432,16 +496,29 @@ export async function run(config: AgentConfig): Promise<void> {
         }
         backoffMs = 0;
       }
-      if (jobs.length === 0) backoffMs = 0;
+      if (jobs.length === 0) {
+        backoffMs = 0;
+        emptyPolls += 1;
+      } else {
+        // Anything at all means the restaurant is awake. Back to three seconds
+        // before the next ticket rather than after it.
+        emptyPolls = 0;
+      }
     } catch (error) {
       if (error instanceof FatalError) throw error;
       // Everything else — the Worker down, the line down, a 500 — is weather.
       // Say so once per tick and keep going, more slowly.
       backoffMs = nextBackoff(backoffMs);
       console.error(`[agent] poll failed: ${describe(error)}`);
+      // A failed poll is not an idle one: we do not know whether there was
+      // anything there. Leaving the counter alone means a long outage does not
+      // also slow the recovery down.
     }
 
-    await sleep(backoffMs === 0 ? POLL_INTERVAL_MS : backoffMs);
+    // A failure backoff always wins over the idle ladder: it is about this
+    // process being in trouble, which is the more urgent of the two things to
+    // respect.
+    await sleep(backoffMs === 0 ? pollIntervalFor(emptyPolls) : backoffMs);
   }
 }
 

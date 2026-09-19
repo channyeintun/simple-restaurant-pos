@@ -89,6 +89,9 @@ impl Int {
     pub const MINOR: Self = Self { min: 0, max: 1_000_000_000 };
     /// `itemSchema.qty` — at least one, and no more than a table can eat.
     pub const QTY: Self = Self { min: 1, max: 99 };
+    /// `prepMinutesSchema`. Ten hours is far past anything a restaurant kitchen
+    /// does in one service, and is there so a `150` meant as `15` is caught.
+    pub const PREP: Self = Self { min: 0, max: 600 };
 }
 
 /* -------------------------------------------------------------------- body */

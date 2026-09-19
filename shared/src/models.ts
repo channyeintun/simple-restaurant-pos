@@ -47,6 +47,21 @@ export const minorSchema = z.number().int().min(0).max(1_000_000_000);
  */
 export const sortSchema = z.number().int().min(0).max(9_999);
 
+/**
+ * Roughly how long a dish takes, in minutes.
+ *
+ * A number a manager types, not a measurement, and the app treats it as such:
+ * it is what the waiter quotes to the customer and what "late" is measured
+ * against, never a promise. Ten hours is the ceiling — far past anything a
+ * restaurant kitchen does in one service, and there so that a mistyped `150`
+ * meant as `15` is caught by something rather than turning every round amber
+ * for the rest of the evening.
+ *
+ * Zero is allowed and means instant: a bottle of water off the shelf. It makes
+ * the round it is on due the moment it is sent, which is correct.
+ */
+export const prepMinutesSchema = z.number().int().min(0).max(600);
+
 /* ------------------------------------------------------------------- staff */
 
 export const staffRoleSchema = z.enum(['waiter', 'cashier', 'admin']);
@@ -281,6 +296,8 @@ export const productSchema = z.object({
   categoryId: idSchema,
   name: z.string().min(1).max(60),
   priceMinor: minorSchema,
+  /** Roughly how long it takes. Snapshotted onto the item at send time. */
+  prepMinutes: prepMinutesSchema,
   sort: sortSchema,
   active: z.boolean(),
 });
@@ -290,6 +307,8 @@ export const createProductSchema = z.object({
   categoryId: idSchema,
   name: z.string().trim().min(1, 'Product name is required').max(60),
   priceMinor: minorSchema,
+  /** Omitted means ten minutes — the column's own default. */
+  prepMinutes: prepMinutesSchema.optional(),
   sort: sortSchema.optional(),
 });
 export type CreateProductInput = z.infer<typeof createProductSchema>;
@@ -439,6 +458,15 @@ export const itemSchema = z.object({
   productId: idSchema.nullable(),
   nameSnapshot: z.string().min(1).max(60),
   priceMinorSnapshot: minorSchema,
+  /**
+   * What this dish was expected to take **when the round was sent**.
+   *
+   * Snapshotted for the same reason the name and the price are: a round sent at
+   * six should not become retrospectively late because somebody edited a prep
+   * time at seven. It also survives a product row being cleaned out by hand,
+   * which `productId` above does not.
+   */
+  prepMinutesSnapshot: prepMinutesSchema,
   qty: z.number().int().min(1).max(99),
   /** Free text for the kitchen: "no chilli", "extra rice". The only modifier. */
   note: z.string().max(120).nullable(),
@@ -656,6 +684,18 @@ export const checkSummarySchema = z.object({
   openedAt: isoSchema,
   /** How many rounds have gone to the kitchen. Roughly how far along they are. */
   roundCount: z.number().int().min(0),
+  /**
+   * How many of those are still out, and the oldest one's clock.
+   *
+   * Three fields rather than a computed state, because "late" depends on the
+   * current second and a response cannot carry that — the tile works it out
+   * with `roundTiming` and re-renders on a timer. Zero and nulls mean
+   * everything has been delivered, which is a table waiting for its bill
+   * rather than for its food.
+   */
+  outstandingRounds: z.number().int().min(0),
+  oldestOutstandingAt: isoSchema.nullable(),
+  oldestOutstandingTargetMinutes: prepMinutesSchema,
   /** Live lines only — a voided line is on the paper trail, not on the bill. */
   totalMinor: minorSchema,
 });
@@ -667,6 +707,22 @@ export const roundDetailSchema = z.object({
   seq: z.number().int().min(1),
   sentByName: z.string(),
   sentAt: isoSchema,
+  /**
+   * When the food reached the table, and who carried it. Null while it is
+   * still out, which is what every timer in the app reads.
+   *
+   * Set by the waiter on their own tablet — it is the one moment in this flow
+   * software cannot observe and a person can. The kitchen has a printer, not a
+   * screen, and touches none of this.
+   */
+  deliveredAt: isoSchema.nullable(),
+  deliveredByName: z.string().nullable(),
+  /**
+   * How long this round should take: the slowest dish on it. Computed by the
+   * Worker with `round_target_minutes`, whose TypeScript twin the browser uses
+   * to draw the countdown.
+   */
+  targetMinutes: prepMinutesSchema,
   items: z.array(itemSchema),
 });
 export type RoundDetail = z.infer<typeof roundDetailSchema>;

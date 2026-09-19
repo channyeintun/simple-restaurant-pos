@@ -1,7 +1,8 @@
-import type { CheckSummary, Table } from '@pos/shared';
+import { type CheckSummary, type RoundState, type Table, roundTiming } from '@pos/shared';
 import { useNavigate } from '@solidjs/router';
 import { For, Show, createMemo } from 'solid-js';
 import { Button, ErrorBanner, Spinner } from '../../components/ui.js';
+import { createNow } from '../../lib/clock.js';
 import { useOpenChecks, useTables } from '../../lib/queries.js';
 import { useApp } from '../../state/app.js';
 import { hasDraft, slotKey } from '../../state/cart.js';
@@ -37,6 +38,41 @@ export function TablesPane(props: { current: string | null }) {
   const navigate = useNavigate();
   const tables = useTables();
   const checks = useOpenChecks();
+  const now = createNow();
+
+  /**
+   * How long this table's oldest outstanding round has been waiting.
+   *
+   * Null when nothing is out — which is a table that has eaten and is waiting
+   * for its bill, and wants no timer on it at all. The summary carries the
+   * oldest round's stamp and target rather than a state, because "late"
+   * depends on the current second and a response cannot hold that; this is
+   * where the two are put together, and `now()` ticking is what re-renders it.
+   */
+  const timing = (check: CheckSummary | undefined) => {
+    if (!check?.oldestOutstandingAt) return null;
+    return roundTiming({
+      sentAtMs: Date.parse(check.oldestOutstandingAt),
+      deliveredAtMs: null,
+      targetMinutes: check.oldestOutstandingTargetMinutes,
+      nowMs: now(),
+    });
+  };
+
+  /**
+   * What the timer says, which is not the same question as how it is coloured.
+   *
+   * Overdue counts *up* and everything else counts *down*, because those are
+   * the two different things a waiter needs. Before the promise runs out they
+   * want what to tell the customer; after it, they want how bad it has got.
+   */
+  const timerLabel = (state: RoundState, remaining: number) => {
+    if (state === 'late' || (state === 'due' && remaining < 0)) {
+      return m().timing.overdueBy(Math.abs(remaining));
+    }
+    if (remaining <= 0) return m().timing.readyNow;
+    return m().timing.readyIn(remaining);
+  };
 
   /** Open checks by table id, so a tile can find its own without a scan. */
   const byTable = createMemo(() => {
@@ -124,11 +160,19 @@ export function TablesPane(props: { current: string | null }) {
                   type="button"
                   class="tile table-tile"
                   data-open={check() ? 'true' : 'false'}
+                  data-timing={timing(check())?.state}
                   data-current={props.current === table.id ? 'true' : 'false'}
                   onClick={() => navigate(`/waiter/table/${table.id}`)}
                 >
                   <span class="table-tile-name">{table.name}</span>
                   <span class={stateClass(check())}>{state(check())}</span>
+                  <Show when={timing(check())}>
+                    {(waiting) => (
+                      <span class="tile-timer" data-state={waiting().state}>
+                        {timerLabel(waiting().state, waiting().remainingMinutes)}
+                      </span>
+                    )}
+                  </Show>
                   <Show when={hasDraft(key())}>
                     <span class="table-tile-dot" aria-label={m().waiter.unsent} />
                   </Show>
@@ -143,11 +187,19 @@ export function TablesPane(props: { current: string | null }) {
                 type="button"
                 class="tile table-tile"
                 data-open="true"
+                data-timing={timing(check)?.state}
                 data-current={props.current === check.id ? 'true' : 'false'}
                 onClick={() => navigate(`/waiter/check/${check.id}`)}
               >
                 <span class="table-tile-name">{m().waiter.takeaway}</span>
                 <span class={stateClass(check)}>{state(check)}</span>
+                <Show when={timing(check)}>
+                  {(waiting) => (
+                    <span class="tile-timer" data-state={waiting().state}>
+                      {timerLabel(waiting().state, waiting().remainingMinutes)}
+                    </span>
+                  )}
+                </Show>
                 <Show when={hasDraft(slotKey({ kind: 'check', checkId: check.id }))}>
                   <span class="table-tile-dot" aria-label={m().waiter.unsent} />
                 </Show>
