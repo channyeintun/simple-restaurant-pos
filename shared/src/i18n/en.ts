@@ -153,6 +153,39 @@ export const en = {
     backToChecks: 'Back to checks',
     none: 'Nothing open',
     takePayment: 'Take payment',
+    /*
+     * Splitting the bill, in the fewest words that say what happens.
+     *
+     * "Pay some items" rather than "Split bill", because splitting a bill means
+     * three different things in three different restaurants — by item, by
+     * cover, by an even share — and this app does exactly one of them. Naming
+     * the thing it does avoids promising the two it does not.
+     */
+    paySome: 'Pay some items',
+    paySelected: 'Pay selected',
+    /** The label under the figure while lines are being picked. */
+    picked: 'Selected',
+    /**
+     * The label under the figure once part of a table has settled.
+     *
+     * It replaces "Total" rather than sitting beside it, because the number
+     * above it has stopped being the total and a cashier reading the old word
+     * against the new number takes the wrong money.
+     */
+    stillOwed: 'Still owed',
+    /** What a line's badge says when some of it is settled: "2 of 4 paid". */
+    paidSome: (paid: number, of: number) => `${paid} of ${of} paid`,
+    /** The pick button's spoken label — the digit on it says nothing aloud. */
+    pickLine: (name: string) => `Pay for ${name}`,
+    /*
+     * The badge on a board card whose table is part way through settling.
+     *
+     * It names what has been *taken* rather than what is left, because the big
+     * figure beside it is already what is left — and a card showing two
+     * numbers that could both be the bill is a card somebody reads wrong while
+     * holding cash.
+     */
+    partPaid: (amount: string) => `${amount} paid`,
     paymentHeadline: (name: string) => `Payment for ${name}`,
     paying: 'Taking payment…',
     paid: 'Paid',

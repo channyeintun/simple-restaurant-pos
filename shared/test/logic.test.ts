@@ -7,7 +7,13 @@ import {
   toZonedParts,
   zonedDateKey,
 } from '../src/time.ts';
-import { checkTotalMinor, lineTotalMinor } from '../src/totals.ts';
+import {
+  checkOutstandingMinor,
+  checkTotalMinor,
+  lineOutstandingMinor,
+  lineTotalMinor,
+  pickedTotalMinor,
+} from '../src/totals.ts';
 import { renderTicket } from '../src/ticket.ts';
 import { LATE_GRACE_MINUTES, roundTargetMinutes, roundTiming } from '../src/timing.ts';
 import type { Currency } from '../src/config.ts';
@@ -200,11 +206,25 @@ check('115 x 7 is exactly 805, not 804', lineTotalMinor(115, 7), 805);
 const live = (priceMinorSnapshot: number, qty: number) => ({
   priceMinorSnapshot,
   qty,
+  qtyPaid: 0,
+  voidedAt: null,
+});
+const partPaid = (priceMinorSnapshot: number, qty: number, qtyPaid: number) => ({
+  priceMinorSnapshot,
+  qty,
+  qtyPaid,
   voidedAt: null,
 });
 const struck = (priceMinorSnapshot: number, qty: number) => ({
   priceMinorSnapshot,
   qty,
+  qtyPaid: 0,
+  voidedAt: '2026-09-18T13:00:00.000Z',
+});
+const struckAfterPaying = (priceMinorSnapshot: number, qty: number, qtyPaid: number) => ({
+  priceMinorSnapshot,
+  qty,
+  qtyPaid,
   voidedAt: '2026-09-18T13:00:00.000Z',
 });
 
@@ -228,6 +248,68 @@ check('a wholly voided check comes to zero', checkTotalMinor([struck(4_500, 3), 
 // is only approximately the same.
 check('the schema maxima multiply exactly', checkTotalMinor([live(1_000_000_000, 99)]), 99_000_000_000);
 check('and are inside the exact-integer range', 99_000_000_000 < 2 ** 53, true);
+
+// --- what is still owed ----------------------------------------------------
+// The twins of `line_outstanding_minor`, `check_outstanding_minor` and
+// `picked_total_minor` in `api/core/src/totals.rs`, case for case.
+
+check('nothing paid means the whole line is owed', lineOutstandingMinor(4_500, 3, 0), 13_500);
+check('a part paid line owes only what is left', lineOutstandingMinor(1_000, 4, 1), 3_000);
+check('and again nearer the end', lineOutstandingMinor(1_000, 4, 3), 1_000);
+check('a fully paid line owes nothing', lineOutstandingMinor(4_500, 3, 3), 0);
+// Unreachable through the API — the write guard refuses settling more units
+// than are unpaid — so this is the hand-edited row. Zero, not a negative that
+// would quietly discount the rest of the bill.
+check('more paid than ordered still owes nothing', lineOutstandingMinor(4_500, 1, 9), 0);
+
+check('an empty check owes nothing', checkOutstandingMinor([]), 0);
+// The headline case: a table of four with one round of four beers, one of whom
+// has paid. Gross is unchanged; what is owed is three beers.
+check(
+  'a part paid check owes the rest',
+  checkOutstandingMinor([partPaid(1_000, 4, 1), live(4_500, 2)]),
+  12_000,
+);
+check(
+  'and its bill still says what the meal cost',
+  checkTotalMinor([partPaid(1_000, 4, 1), live(4_500, 2)]),
+  13_000,
+);
+// What closes a check.
+check(
+  'a wholly paid check owes nothing',
+  checkOutstandingMinor([partPaid(1_000, 4, 4), partPaid(4_500, 2, 2)]),
+  0,
+);
+check(
+  'and still totals',
+  checkTotalMinor([partPaid(1_000, 4, 4), partPaid(4_500, 2, 2)]),
+  13_000,
+);
+// A line struck off after somebody paid for it owes nothing — the money changed
+// hands and this API has no refund — and it stays on the bill, which is the
+// paper trail that says so.
+check(
+  'a line voided after payment owes nothing',
+  checkOutstandingMinor([struckAfterPaying(1_000, 4, 2), live(4_500, 1)]),
+  4_500,
+);
+check(
+  'and is off the bill like any other void',
+  checkTotalMinor([struckAfterPaying(1_000, 4, 2), live(4_500, 1)]),
+  4_500,
+);
+check('a wholly voided check owes nothing', checkOutstandingMinor([struck(4_500, 3), struck(800, 2)]), 0);
+
+check('picking nothing comes to nothing', pickedTotalMinor([]), 0);
+check(
+  'a pick is priced by the units taken, not the line',
+  pickedTotalMinor([
+    { priceMinorSnapshot: 1_000, qty: 1 },
+    { priceMinorSnapshot: 4_500, qty: 2 },
+  ]),
+  10_000,
+);
 
 // --- the kitchen ticket ----------------------------------------------------
 // `2026-09-18T13:00:00Z` is 19:30 in Yangon — the same instant the clock cases

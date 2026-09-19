@@ -114,6 +114,36 @@ export const checkPaidSchema = z.object({
 });
 
 /**
+ * Somebody paid for part of a table, and the check is still open.
+ *
+ * The eighth event, and the only one that reports money arriving without
+ * anything closing. It cannot be `check.paid`: the board reducer treats that as
+ * "this table is finished, take the card away", and firing it for a table where
+ * two of the four diners are still eating would clear the card off the till
+ * while the food is on the pass.
+ *
+ * `outstandingMinor` is the state itself and not a delta, for the same reason
+ * `round.delivered` carries a count rather than a decrement: a client that
+ * missed an event — a reconnect, a tablet asleep — applies this one and is
+ * correct again, instead of being correct relative to something it never saw.
+ * `totalMinor` rides along because a part-paid card shows both, and a board
+ * that had to fetch the bill to draw one card would spend the request budget
+ * this catalogue exists to protect.
+ */
+export const checkPartPaidSchema = z.object({
+  checkId: idSchema,
+  tableId: idSchema.nullable(),
+  method: paymentMethodSchema,
+  /** What this payment took, for a till that wants to show what just happened. */
+  amountMinor: minorSchema,
+  /** What the meal has cost so far. Unchanged by paying — see `totals.ts`. */
+  totalMinor: minorSchema,
+  /** What is left to collect. Zero never appears here: that would be a close. */
+  outstandingMinor: minorSchema,
+  at: isoSchema,
+});
+
+/**
  * The kitchen printer did not print something.
  *
  * This is the one event with a person's attention attached to it: it raises the
@@ -193,6 +223,7 @@ export const realtimeSchema = {
   check: {
     opened: checkOpenedSchema,
     paid: checkPaidSchema,
+    part_paid: checkPartPaidSchema,
   },
   round: {
     sent: roundSentSchema,
@@ -214,6 +245,7 @@ export type RealtimeSchema = typeof realtimeSchema;
 export interface EventPayloadMap {
   'check.opened': z.infer<typeof checkOpenedSchema>;
   'check.paid': z.infer<typeof checkPaidSchema>;
+  'check.part_paid': z.infer<typeof checkPartPaidSchema>;
   'round.sent': z.infer<typeof roundSentSchema>;
   'round.delivered': z.infer<typeof roundDeliveredSchema>;
   'item.voided': z.infer<typeof itemVoidedSchema>;
@@ -227,6 +259,7 @@ export type EventPayload<K extends EventName> = EventPayloadMap[K];
 export const EVENT_NAMES = [
   'check.opened',
   'check.paid',
+  'check.part_paid',
   'round.sent',
   'round.delivered',
   'item.voided',
@@ -252,6 +285,9 @@ export type EventCatalogueIsConsistent = Assert<
   Exact<EventPayloadMap['check.opened'], z.infer<typeof realtimeSchema.check.opened>>
 > &
   Assert<Exact<EventPayloadMap['check.paid'], z.infer<typeof realtimeSchema.check.paid>>> &
+  Assert<
+    Exact<EventPayloadMap['check.part_paid'], z.infer<typeof realtimeSchema.check.part_paid>>
+  > &
   Assert<Exact<EventPayloadMap['round.sent'], z.infer<typeof realtimeSchema.round.sent>>> &
   Assert<
     Exact<EventPayloadMap['round.delivered'], z.infer<typeof realtimeSchema.round.delivered>>

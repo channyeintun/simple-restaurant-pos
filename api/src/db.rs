@@ -735,12 +735,17 @@ pub struct OutstandingLineRow {
     pub prep_minutes_snapshot: Option<i64>,
 }
 
-/// A live line on some open check, with only the two columns a total needs.
+/// A live line on some open check, with only the columns a total needs.
+///
+/// Three now rather than two: the board draws both what the meal has cost and
+/// what is still owed, and the second of those cannot be computed from the
+/// first without knowing how many units of each line have been settled.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenLineRow {
     pub check_id: String,
     pub price_minor_snapshot: i64,
     pub qty: i64,
+    pub qty_paid: i64,
 }
 
 /// A check's own row, with the two names a screen would otherwise have to
@@ -778,6 +783,11 @@ pub struct RoundItemRow {
     pub price_minor_snapshot: Option<i64>,
     pub prep_minutes_snapshot: Option<i64>,
     pub qty: Option<i64>,
+    /// `COALESCE`d to 0 in the query, so it is never NULL for a row that has an
+    /// item — but it is still `Option` because the LEFT join can produce a row
+    /// with no item at all, and every item column here is optional for that
+    /// same reason.
+    pub qty_paid: Option<i64>,
     pub note: Option<String>,
     pub voided_at: Option<String>,
     pub voided_by: Option<String>,
@@ -845,6 +855,7 @@ pub struct CheckSummary {
     pub oldest_outstanding_at: Option<String>,
     pub oldest_outstanding_target_minutes: i64,
     pub total_minor: i64,
+    pub outstanding_minor: i64,
 }
 
 /// `itemSchema`.
@@ -858,6 +869,9 @@ pub struct Item {
     pub price_minor_snapshot: i64,
     pub prep_minutes_snapshot: i64,
     pub qty: i64,
+    /// How many of `qty` are already settled — the sum of this line's rows in
+    /// `payment_items`, read alongside the item rather than stored on one.
+    pub qty_paid: i64,
     pub note: Option<String>,
     pub voided_at: Option<String>,
     pub voided_by: Option<String>,
@@ -895,6 +909,7 @@ pub struct CheckDetail {
     pub rounds: Vec<RoundDetail>,
     pub payments: Vec<PaymentRow>,
     pub total_minor: i64,
+    pub outstanding_minor: i64,
 }
 
 impl CheckDetail {
@@ -910,9 +925,21 @@ impl CheckDetail {
             .map(|item| CheckLine {
                 price_minor_snapshot: item.price_minor_snapshot,
                 qty: item.qty,
+                qty_paid: item.qty_paid,
                 voided_at: item.voided_at.clone(),
             })
             .collect()
+    }
+
+    /// The live item with this id, for a route that has been handed one by a
+    /// client and has to decide whether it is on this check at all.
+    ///
+    /// Linear over a check's twenty-odd lines, which is cheaper than the map
+    /// that would avoid the scan and very much cheaper than asking the database
+    /// again — and the answer has to come from the same read the guard's counts
+    /// came from, or the message and the write disagree about what they saw.
+    pub fn item(&self, item_id: &str) -> Option<&Item> {
+        self.rounds.iter().flat_map(|round| round.items.iter()).find(|item| item.id == item_id)
     }
 }
 
@@ -949,7 +976,9 @@ pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>
             db.prepare(
                 "SELECT r.check_id AS check_id,
                 i.price_minor_snapshot AS price_minor_snapshot,
-                i.qty AS qty
+                i.qty AS qty,
+                COALESCE((SELECT SUM(a.qty_paid) FROM payment_items a
+                           WHERE a.item_id = i.id), 0) AS qty_paid
         FROM items i
         JOIN rounds r ON r.id = i.round_id
         JOIN checks c ON c.id = r.check_id
@@ -987,7 +1016,12 @@ pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>
             // None by construction. The type still carries the field, because
             // `check_total_minor` is the one definition of a total and it is not
             // going to grow a second entry point that trusts its caller.
-            .push(CheckLine { price_minor_snapshot: line.price_minor_snapshot, qty: line.qty, voided_at: None });
+            .push(CheckLine {
+                price_minor_snapshot: line.price_minor_snapshot,
+                qty: line.qty,
+                qty_paid: line.qty_paid,
+                voided_at: None,
+            });
     }
 
     /*
@@ -1032,7 +1066,13 @@ pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>
     Ok(headers
         .into_iter()
         .map(|header| {
-            let total = by_check.get(&header.id).map_or(0, |lines| totals::check_total_minor(lines));
+            // Both figures from the same lines, by the two twinned rules. A
+            // card that computed one of them from the other would be adding a
+            // third definition of a total in the place least likely to be read.
+            let check_lines = by_check.get(&header.id);
+            let total = check_lines.map_or(0, |lines| totals::check_total_minor(lines));
+            let outstanding =
+                check_lines.map_or(0, |lines| totals::check_outstanding_minor(lines));
             let out = out_by_check.remove(&header.id).unwrap_or_default();
             CheckSummary {
                 id: header.id,
@@ -1046,6 +1086,7 @@ pub async fn list_open_checks(db: &D1Database) -> WorkerResult<Vec<CheckSummary>
                 // The twinned rule, not a `MAX()` in the statement above.
                 oldest_outstanding_target_minutes: timing::round_target_minutes(&out.oldest_lines),
                 total_minor: total,
+                outstanding_minor: outstanding,
             }
         })
         .collect())
@@ -1107,6 +1148,8 @@ pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Optio
                 i.price_minor_snapshot AS price_minor_snapshot,
                 i.prep_minutes_snapshot AS prep_minutes_snapshot,
                 i.qty AS qty,
+                COALESCE((SELECT SUM(a.qty_paid) FROM payment_items a
+                           WHERE a.item_id = i.id), 0) AS qty_paid,
                 i.note AS note,
                 i.voided_at AS voided_at,
                 i.voided_by AS voided_by
@@ -1175,6 +1218,11 @@ pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Optio
                 price_minor_snapshot,
                 prep_minutes_snapshot,
                 qty,
+                // `COALESCE`d to 0 by the statement, so the fallback here is
+                // for the row shape rather than for the data: an item that came
+                // back without the column at all owes for all of itself, which
+                // is the safe way round to be wrong.
+                qty_paid: row.qty_paid.unwrap_or(0),
                 note: row.note,
                 voided_at: row.voided_at,
                 voided_by: row.voided_by,
@@ -1204,8 +1252,15 @@ pub async fn check_detail(db: &D1Database, check_id: &str) -> WorkerResult<Optio
         rounds,
         payments,
         total_minor: 0,
+        outstanding_minor: 0,
     };
-    detail.total_minor = totals::check_total_minor(&detail.lines());
+    // Both from the same lines and both by their own twinned rule. `total` is
+    // what the meal cost and goes on the bill; `outstanding` is what the
+    // customer still hands over, and it is the one every control that takes
+    // money has to be showing.
+    let lines = detail.lines();
+    detail.total_minor = totals::check_total_minor(&lines);
+    detail.outstanding_minor = totals::check_outstanding_minor(&lines);
     Ok(Some(detail))
 }
 

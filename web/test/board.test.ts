@@ -28,18 +28,49 @@ function check(label: string, actual: unknown, expected: unknown) {
 const tables: Record<string, string> = { tbl_4: 'Table 4', tbl_7: 'Table 7' };
 const tableNameFor = (id: string | null) => (id === null ? null : (tables[id] ?? null));
 
-const card = (over: Partial<CheckSummary> = {}): CheckSummary => ({
-  id: 'chk_1',
-  tableId: 'tbl_4',
-  tableName: 'Table 4',
-  openedByName: 'Su',
-  openedAt: '2026-09-18T13:00:00.000Z',
-  roundCount: 1,
-  outstandingRounds: 1,
-  oldestOutstandingAt: '2026-09-18T13:00:00.000Z',
-  oldestOutstandingTargetMinutes: 15,
-  totalMinor: 11_400,
-  ...over,
+/**
+ * A card on the board.
+ *
+ * `outstandingMinor` defaults to whatever `totalMinor` ends up being, because
+ * that is what it *is* on every check nobody has split — which is every case in
+ * this file except the two that say otherwise. Defaulting it keeps those cases
+ * about the thing they are testing instead of repeating a figure twice.
+ */
+const card = (over: Partial<CheckSummary> = {}): CheckSummary => {
+  const base: CheckSummary = {
+    id: 'chk_1',
+    tableId: 'tbl_4',
+    tableName: 'Table 4',
+    openedByName: 'Su',
+    openedAt: '2026-09-18T13:00:00.000Z',
+    roundCount: 1,
+    outstandingRounds: 1,
+    oldestOutstandingAt: '2026-09-18T13:00:00.000Z',
+    oldestOutstandingTargetMinutes: 15,
+    totalMinor: 11_400,
+    outstandingMinor: 11_400,
+    ...over,
+  };
+  return { ...base, outstandingMinor: over.outstandingMinor ?? base.totalMinor };
+};
+
+const partPaid = (
+  checkId: string,
+  amountMinor: number,
+  totalMinor: number,
+  outstandingMinor: number,
+): RealtimeEvent => ({
+  name: 'check.part_paid',
+  channel: 'restaurant',
+  data: {
+    checkId,
+    tableId: 'tbl_4',
+    method: 'cash',
+    amountMinor,
+    totalMinor,
+    outstandingMinor,
+    at: '2026-09-18T13:20:00.000Z',
+  },
 });
 
 const opened = (checkId: string, tableId: string | null): RealtimeEvent => ({
@@ -251,6 +282,64 @@ check(
   'a delivery leaves the total alone — food arriving is not paying for it',
   applyBoardEvent([card({ totalMinor: 11_400 })], delivered('chk_1', 0, null), tableNameFor).map((c) => c.totalMinor),
   [11_400],
+);
+
+// --- part of a table settling ------------------------------------------------
+// The card stays. That is the whole difference between this and `check.paid`,
+// and the reason an eighth event had to exist: clearing a table off the till
+// because one of four diners has paid would take the card away while the other
+// three are still eating.
+
+check(
+  'a part payment keeps the card and lowers what is owed',
+  applyBoardEvent([card({ totalMinor: 13_000 })], partPaid('chk_1', 1_000, 13_000, 12_000), tableNameFor),
+  [card({ totalMinor: 13_000, outstandingMinor: 12_000 })],
+);
+
+// Absolute, not a decrement — so a board that missed the last part payment is
+// corrected here rather than compounding the error.
+check(
+  'it adopts the outstanding figure rather than subtracting',
+  applyBoardEvent([card({ totalMinor: 13_000, outstandingMinor: 99_999 })], partPaid('chk_1', 1_000, 13_000, 12_000), tableNameFor)
+    .map((c) => c.outstandingMinor),
+  [12_000],
+);
+
+// A round sent to a table that is part way through settling adds to what is
+// owed by exactly what it adds to the bill. The event carries only the gross,
+// and every change it can describe is a change in unpaid food.
+check(
+  'a round sent to a part-paid table raises both figures together',
+  applyBoardEvent(
+    [card({ roundCount: 1, totalMinor: 13_000, outstandingMinor: 12_000 })],
+    sent('chk_1', 2, 17_500),
+    tableNameFor,
+  ).map((c) => [c.totalMinor, c.outstandingMinor]),
+  [[17_500, 16_500]],
+);
+
+// And a line struck off lowers both. Only an unpaid line can be voided — the
+// Worker refuses one with money against it — so the two move by the same amount.
+check(
+  'a void on a part-paid table lowers both figures together',
+  applyBoardEvent(
+    [card({ totalMinor: 13_000, outstandingMinor: 12_000 })],
+    voided('chk_1', 9_000),
+    tableNameFor,
+  ).map((c) => [c.totalMinor, c.outstandingMinor]),
+  [[9_000, 8_000]],
+);
+
+// A board whose total had drifted low must not produce a negative, which would
+// quietly discount the rest of the table.
+check(
+  'a drifted total cannot make what is owed negative',
+  applyBoardEvent(
+    [card({ totalMinor: 50_000, outstandingMinor: 1_000 })],
+    voided('chk_1', 9_000),
+    tableNameFor,
+  ).map((c) => c.outstandingMinor),
+  [0],
 );
 
 check(

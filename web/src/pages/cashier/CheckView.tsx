@@ -1,9 +1,15 @@
-import { type CheckDetail, type PaymentMethod, paymentMethodSchema } from '@pos/shared';
+import {
+  type CheckDetail,
+  type PaymentMethod,
+  paymentMethodSchema,
+  pickedTotalMinor,
+} from '@pos/shared';
 import { useNavigate, useParams } from '@solidjs/router';
 import { useQueryClient } from '@tanstack/solid-query';
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createMemo, createSignal } from 'solid-js';
+import { createStore, reconcile } from 'solid-js/store';
 import { ApiError } from '../../api/client.js';
-import { markRoundPrinted, payCheck, voidItem } from '../../api/orders.js';
+import { markRoundPrinted, payCheck, payItems, voidItem } from '../../api/orders.js';
 import { PrintSheet, createTicketPrinter, ticketForRound } from '../../components/PrintSheet.js';
 import {
   Button,
@@ -18,6 +24,7 @@ import {
 import { queryKeys, useCheck } from '../../lib/queries.js';
 import { useApp } from '../../state/app.js';
 import { forgetSlot } from '../../state/cart.js';
+import { beginPayment, paymentSucceeded } from '../../state/payment.js';
 import { useLocale } from '../../state/locale.js';
 
 const METHODS: PaymentMethod[] = paymentMethodSchema.options;
@@ -49,6 +56,27 @@ const METHODS: PaymentMethod[] = paymentMethodSchema.options;
  */
 const CHECK_PANE_TITLE_ID = 'cashier-check-pane-title';
 
+/**
+ * Is there anything on this check worth splitting?
+ *
+ * Two or more unpaid **units**, not two or more lines: a single line of four
+ * beers is the case this whole feature exists for, and a check with one dish
+ * left on it has nothing to divide. Offering the control there would be a
+ * button that leads to a screen where the only possible pick is the one the
+ * other button already makes.
+ */
+function splittable(detail: CheckDetail): boolean {
+  let units = 0;
+  for (const round of detail.rounds) {
+    for (const item of round.items) {
+      if (item.voidedAt) continue;
+      units += item.qty - item.qtyPaid;
+      if (units > 1) return true;
+    }
+  }
+  return false;
+}
+
 export function CashierCheck() {
   const { m } = useLocale();
   const app = useApp();
@@ -63,6 +91,82 @@ export function CashierCheck() {
   const [paying, setPaying] = createSignal(false);
   const [method, setMethod] = createSignal<PaymentMethod>('cash');
   const printer = createTicketPrinter();
+
+  /* ------------------------------------------------------- picking lines */
+
+  /**
+   * Whether the bill is being read or picked from, and what has been picked.
+   *
+   * A mode rather than a control on every row, because the bill is read far
+   * more often than it is split: a cashier settling a whole table should not
+   * have to look past four checkboxes to find the total. Tapping Pay some items
+   * turns the lines into buttons; Cancel turns them back.
+   *
+   * The picks are quantities, keyed by item id — `{ itm_x: 2 }` — because a
+   * line can be settled two now and two later. A line missing from the record
+   * is a line nobody has picked, which is the same thing as zero and avoids a
+   * map full of zeroes after somebody changes their mind.
+   */
+  const [picking, setPicking] = createSignal(false);
+  const [picks, setPicks] = createStore<Record<string, number>>({});
+
+  const unpaidQty = (item: CheckDetail['rounds'][number]['items'][number]) =>
+    item.voidedAt ? 0 : item.qty - item.qtyPaid;
+
+  /**
+   * One tap on a line: take the whole thing, then give it back a unit at a
+   * time.
+   *
+   * The first tap picks **all** of the line's unpaid units, because "this
+   * dish is mine" is what almost every tap means. Tapping again hands one back,
+   * so a four-beer line a table wants to split three-one is four taps rather
+   * than a stepper on every row of every bill — and the last tap drops it to
+   * nothing, which is also how somebody undoes a mis-tap.
+   *
+   * A stepper per line would be two more controls on a row that already has a
+   * quantity, a name, a price and a Void, on the narrowest pane in the app.
+   */
+  const tapLine = (item: CheckDetail['rounds'][number]['items'][number]) => {
+    const available = unpaidQty(item);
+    if (available <= 0) return;
+    const current = picks[item.id] ?? 0;
+    const next = current === 0 ? available : current - 1;
+    setPicks(item.id, next);
+  };
+
+  const pickedLines = createMemo(() => {
+    const current = check.data;
+    if (!current) return [];
+    return current.rounds
+      .flatMap((round) => round.items)
+      .filter((item) => (picks[item.id] ?? 0) > 0)
+      .map((item) => ({ item, qty: picks[item.id] ?? 0 }));
+  });
+
+  /**
+   * What the picked units come to.
+   *
+   * `pickedTotalMinor` — the twin of the Worker's own `picked_total_minor`, so
+   * the figure on the button and the figure charged are the same rule applied
+   * twice rather than two opinions. The Worker prices it again from its own
+   * snapshots and refuses if the two disagree.
+   */
+  const pickedTotal = createMemo(() =>
+    pickedTotalMinor(
+      pickedLines().map(({ item, qty }) => ({
+        priceMinorSnapshot: item.priceMinorSnapshot,
+        qty,
+      })),
+    ),
+  );
+
+  const stopPicking = () => {
+    setPicks(reconcile({}));
+    setPicking(false);
+  };
+
+  /** What this dialog is about to charge: the picks, or everything still owed. */
+  const amountDue = () => (picking() ? pickedTotal() : (check.data?.outstandingMinor ?? 0));
 
   /**
    * Print a round's kitchen ticket from the till.
@@ -113,15 +217,51 @@ export function CashierCheck() {
     }
   };
 
+  /**
+   * Take the money, for the picks or for the rest of the table.
+   *
+   * One function for both, because everything around the request is identical
+   * and the two differing in their error handling is how one of them ends up
+   * with a bug the other does not have.
+   *
+   * The whole-check path still sends the check's own figure and gets a 409 if
+   * it has moved. The per-item path sends a **client key** as well, taken from
+   * this tablet's storage rather than minted here, so that a retry after a lost
+   * reply is recognised as the same tap instead of charging the table twice.
+   */
   const settle = async () => {
     const current = check.data;
     if (!current) return;
+    if (picking() && pickedLines().length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const paid = await payCheck(current.id, method(), current.totalMinor);
+      const paid = picking()
+        ? await payItems(
+            current.id,
+            method(),
+            pickedLines().map(({ item, qty }) => ({ itemId: item.id, qty })),
+            pickedTotal(),
+            beginPayment(current.id),
+          )
+        : await payCheck(current.id, method(), current.outstandingMinor);
+      // Both at once and only here. A key let go while the picks survive
+      // re-charges the same dishes; picks dropped while the key survives take
+      // nothing at all on the next tap, because the Worker answers the repeat
+      // with the check it already settled.
+      paymentSucceeded(current.id);
       adopt(paid);
       setPaying(false);
+      stopPicking();
+
+      // Still open: somebody at this table has not paid yet. Stay on the check
+      // — the cashier is very often about to take the next person's money, and
+      // bouncing them to the board to walk straight back in is two taps for
+      // nothing.
+      if (paid.status === 'open') {
+        setBusy(false);
+        return;
+      }
       /*
        * Any draft still attached to this check is gone with it. A waiter who
        * had a half-tapped second round open on a table that has just been paid
@@ -207,8 +347,39 @@ export function CashierCheck() {
                     </div>
                     <For each={round.items}>
                       {(item) => (
-                        <div class="sent-line" data-voided={item.voidedAt ? 'true' : 'false'}>
-                          <span class="sent-line-qty">{item.qty}</span>
+                        <div
+                          class="sent-line"
+                          data-voided={item.voidedAt ? 'true' : 'false'}
+                          data-picked={(picks[item.id] ?? 0) > 0 ? 'true' : 'false'}
+                        >
+                          {/*
+                            The quantity cell doubles as the pick control while
+                            the bill is being split, so a row gains a target
+                            rather than a control: it is already the leftmost
+                            thing on the line, it is already where the eye goes
+                            to count, and `--pos-touch` sizes it past 48px.
+
+                            A `<button>` and not a click handler on the row.
+                            The row carries a Void beside it, and a tap that
+                            could mean either depending on where it landed is
+                            the kind of screen where somebody eventually voids
+                            a dish they meant to charge for.
+                          */}
+                          <Show
+                            when={picking() && unpaidQty(item) > 0}
+                            fallback={<span class="sent-line-qty">{item.qty}</span>}
+                          >
+                            <button
+                              type="button"
+                              class="sent-line-qty pick"
+                              aria-pressed={(picks[item.id] ?? 0) > 0}
+                              aria-label={m().cashier.pickLine(item.nameSnapshot)}
+                              disabled={busy()}
+                              onClick={() => tapLine(item)}
+                            >
+                              {picks[item.id] ?? 0}
+                            </button>
+                          </Show>
                           <span>
                             {item.nameSnapshot}
                             <Show when={item.note}>
@@ -221,27 +392,55 @@ export function CashierCheck() {
                                 </>
                               )}
                             </Show>
+                            {/*
+                              What is already settled on this line, said on the
+                              line itself. A cashier taking the third person's
+                              money has to be able to see which dishes the first
+                              two paid for without keeping it in their head.
+                            */}
+                            <Show when={item.qtyPaid > 0 && !item.voidedAt}>
+                              {' '}
+                              <span class="badge" data-tone="ok">
+                                {item.qtyPaid >= item.qty
+                                  ? m().cashier.paid
+                                  : m().cashier.paidSome(item.qtyPaid, item.qty)}
+                              </span>
+                            </Show>
                           </span>
                           <span class="money">
                             {app.money(item.priceMinorSnapshot * item.qty)}
                           </span>
+                          {/*
+                            Void is hidden while picking. Two controls on one
+                            row, one of which takes money and one of which
+                            destroys a line, is the arrangement the brief's
+                            confirm rule exists to keep apart — and there is
+                            nothing to void in the middle of settling anyway.
+                          */}
                           <Show
-                            when={!item.voidedAt && detail().status === 'open'}
+                            when={!item.voidedAt && detail().status === 'open' && !picking()}
                             fallback={
                               <Show when={item.voidedAt}>
                                 <span class="badge">{m().waiter.voided}</span>
                               </Show>
                             }
                           >
-                            <ConfirmButton
-                              headline={m().waiter.voidHeadline}
-                              body={m().waiter.voidBody(item.nameSnapshot)}
-                              confirmLabel={m().waiter.void}
-                              disabled={busy()}
-                              onConfirm={() => void strike(item.id)}
-                            >
-                              {m().waiter.void}
-                            </ConfirmButton>
+                            {/*
+                              A line with money against it cannot be struck off
+                              — there is no refund in this API to undo it with —
+                              so the control goes rather than failing on tap.
+                            */}
+                            <Show when={item.qtyPaid === 0}>
+                              <ConfirmButton
+                                headline={m().waiter.voidHeadline}
+                                body={m().waiter.voidBody(item.nameSnapshot)}
+                                confirmLabel={m().waiter.void}
+                                disabled={busy()}
+                                onConfirm={() => void strike(item.id)}
+                              >
+                                {m().waiter.void}
+                              </ConfirmButton>
+                            </Show>
                           </Show>
                         </div>
                       )}
@@ -258,17 +457,68 @@ export function CashierCheck() {
               than at the screen.
             */}
             <div class="send-bar">
+              {/*
+                What is owed, not what the meal cost.
+
+                The two are the same number on every check nobody has split, and
+                the day they differ is the day this figure matters: a cashier
+                counting notes against the gross total of a table two of whose
+                four diners have already paid takes their money a second time.
+                The gross is still on the bill above, where it belongs.
+              */}
               <div class="send-total">
-                <span class="send-total-value">{app.money(detail().totalMinor)}</span>
-                <span class="stat-label">{m().waiter.total}</span>
+                <span class="send-total-value">{app.money(amountDue())}</span>
+                <span class="stat-label">
+                  {picking()
+                    ? m().cashier.picked
+                    : detail().outstandingMinor === detail().totalMinor
+                      ? m().waiter.total
+                      : m().cashier.stillOwed}
+                </span>
               </div>
               <Show
                 when={detail().status === 'open'}
                 fallback={<span class="badge" data-tone="ok">{m().cashier.paid}</span>}
               >
-                <Button disabled={busy()} onClick={() => setPaying(true)}>
-                  {m().cashier.takePayment}
-                </Button>
+                <Show
+                  when={picking()}
+                  fallback={
+                    <>
+                      {/*
+                        Offered only when there is more than one thing to
+                        divide. A table with a single dish on it has nothing to
+                        split, and a control that does nothing is a control
+                        somebody has to learn to ignore.
+                      */}
+                      <Show when={splittable(detail())}>
+                        <Button
+                          variant="outlined"
+                          disabled={busy()}
+                          onClick={() => setPicking(true)}
+                        >
+                          {m().cashier.paySome}
+                        </Button>
+                      </Show>
+                      <Button disabled={busy()} onClick={() => setPaying(true)}>
+                        {m().cashier.takePayment}
+                      </Button>
+                    </>
+                  }
+                >
+                  {/*
+                    Cancel is a plain button and not a ConfirmButton: nothing
+                    has been taken yet and the picks are a selection, not work.
+                  */}
+                  <Button variant="text" disabled={busy()} onClick={stopPicking}>
+                    {m().app.cancel}
+                  </Button>
+                  <Button
+                    disabled={busy() || pickedLines().length === 0}
+                    onClick={() => setPaying(true)}
+                  >
+                    {m().cashier.paySelected}
+                  </Button>
+                </Show>
               </Show>
             </div>
 
@@ -295,9 +545,35 @@ export function CashierCheck() {
                   number nobody added up.
                 */}
                 <div class="stat">
-                  <span class="stat-value money">{app.money(detail().totalMinor)}</span>
-                  <span class="stat-label">{m().waiter.total}</span>
+                  <span class="stat-value money">{app.money(amountDue())}</span>
+                  <span class="stat-label">
+                    {picking()
+                      ? m().cashier.picked
+                      : detail().outstandingMinor === detail().totalMinor
+                        ? m().waiter.total
+                        : m().cashier.stillOwed}
+                  </span>
                 </div>
+                {/*
+                  What is being paid for, listed. The modal is the only thing on
+                  screen while the cash is counted, so the bill behind it cannot
+                  be the thing that says which dishes this covers.
+                */}
+                <Show when={picking()}>
+                  <div class="picked-lines">
+                    <For each={pickedLines()}>
+                      {({ item, qty }) => (
+                        <div class="picked-line">
+                          <span class="sent-line-qty">{qty}</span>
+                          <span>{item.nameSnapshot}</span>
+                          <span class="money">
+                            {app.money(item.priceMinorSnapshot * qty)}
+                          </span>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
                 <ChipSet ariaLabel={m().cashier.takePayment}>
                   <For each={METHODS}>
                     {(option) => (

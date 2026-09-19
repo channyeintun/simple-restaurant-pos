@@ -34,6 +34,7 @@
 //! order did not go through when it did.
 
 use serde_json::json;
+use wasm_bindgen::JsValue;
 use worker::d1::{D1Database, D1PreparedStatement};
 use worker::{Env, Method, Request, Response};
 
@@ -106,6 +107,10 @@ pub async fn route(
             deliver_round(env, identity, id, round_id).await
         }
         (Method::Post, [id, "pay"]) => pay(req, env, identity, id).await,
+        // Three segments, so it cannot be confused with the four-segment
+        // `[id, "items", item_id, "void"]` above, and `/pay` goes on meaning
+        // the whole check unambiguously.
+        (Method::Post, [id, "items", "pay"]) => pay_items(req, env, identity, id).await,
         _ => return None,
     })
 }
@@ -450,6 +455,20 @@ async fn send_round(req: &mut Request, env: &Env, identity: &Identity) -> ApiRes
 /// `require_staff` and not a till role. The waiter who mis-sent the line is
 /// standing at the table and is the person who should strike it off; `voided_by`
 /// is what carries the accountability.
+///
+/// ## A line somebody has paid for cannot be struck off
+///
+/// `NOT EXISTS (an allocation against this item)`, new in 0004. The case was
+/// unreachable before it: voiding needs the check open, and taking the money
+/// closed it. Partial settlement makes it reachable for the first time, and
+/// what it would do is take a paid dish off the bill, tell the kitchen to
+/// cancel food a customer has already paid for, and leave the money with
+/// nothing to point at — in an API where `amount_minor >= 0` means a refund is
+/// not even expressible. The refusal is the honest answer until there is a
+/// route that can give money back.
+///
+/// It guards on any allocation, not on the line being *fully* paid: one of four
+/// beers settled is still a beer somebody bought.
 async fn void_item(
     env: &Env,
     identity: &Identity,
@@ -471,6 +490,7 @@ async fn void_item(
             voided_by = ?3
         WHERE id = ?1
           AND voided_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM payment_items a WHERE a.item_id = ?1)
           AND round_id IN (SELECT r.id FROM rounds r
                              JOIN checks c ON c.id = r.check_id
                             WHERE c.id = ?4 AND c.status = 'open')",
@@ -637,10 +657,31 @@ async fn deliver_round(
 /// to now — a customer charged for a dish they did not order, or a dish given
 /// away — and neither is discoverable afterwards.
 ///
-/// The close and the payment are one batch, and the payment is guarded on the
-/// close having happened: `WHERE closed_at = ?stamp`. Two cashiers, or one
-/// double tap, cannot produce two payment rows, because only one of them can be
-/// the request that closed the check.
+/// ## The order of the two statements, and why it was turned around
+///
+/// The payment is written **first**, carrying the whole guard, and the close
+/// hangs off the payment having been written. It used to be the other way
+/// about — close first, payment guarded on `closed_at = ?stamp` — and that had
+/// a one-millisecond hole in it that per-item settlement would have widened
+/// into a habit. `?stamp` is this request's own `now_iso()`, so two pays
+/// landing in the same millisecond compute the same value: the loser's UPDATE
+/// correctly matches nothing and answers 409, and its INSERT then finds
+/// `closed_at = ?stamp` perfectly true, because the *winner* wrote that stamp.
+/// A second full-amount payment row, on a check the API just told the till it
+/// had failed to settle.
+///
+/// Writing the money first fixes it by construction: `payments.id` is minted
+/// per request and `EXISTS (SELECT 1 FROM payments WHERE id = ?1)` can only be
+/// true for the request that minted it. Nothing else in the batch depends on a
+/// value another request could have written.
+///
+/// ## The third component of the fingerprint
+///
+/// The guard used to count rounds and live lines. Neither moves when somebody
+/// settles two dishes out of a table's six, so a till holding a screen from
+/// before that would have charged the full total on top of it — the sharpest
+/// hazard the whole feature has. It now counts settled **units** as well, which
+/// is precisely what a per-item payment changes and nothing else does.
 async fn pay(
     req: &mut Request,
     env: &Env,
@@ -663,26 +704,89 @@ async fn pay(
         return Err(http::conflict("That check has already been settled."));
     }
 
-    let total = totals::check_total_minor(&before.lines());
-    if total != expected {
+    // What is **owed**, not what the meal cost. On a check nobody has split the
+    // two are the same number, which is every check this route saw before 0004;
+    // on one where two of the four diners have already paid, charging the gross
+    // total would take their money a second time.
+    let lines = before.lines();
+    let owed = totals::check_outstanding_minor(&lines);
+    if owed != expected {
         // The new figure is in the message, because the cashier is holding cash
         // and needs the number rather than an instruction to go and look.
         return Err(http::conflict_with(
-            format!("The total has changed to {total}. Check the bill and try again."),
+            format!("The total has changed to {owed}. Check the bill and try again."),
             http::code::CONFLICT,
         ));
     }
 
+    let payment_id = http::new_id("pay");
+
     let at = http::now_iso();
     let results = db_handle
         .batch(vec![
-            // The close, guarded on the check still being open *and* on it
-            // still having the rounds and live lines it had when the total was
-            // read a moment ago. Those two counts are the check's fingerprint:
-            // a round sent between the read and this statement changes one, a
-            // void changes the other, and either means the total on the screen
-            // is no longer the total — so the row does not match and nothing is
-            // written.
+            // [0] The money, carrying the whole guard.
+            //
+            // Three counts, and they are the check's fingerprint: a round sent
+            // between the read and this statement changes the first, a void
+            // changes the second, and somebody settling part of the table
+            // changes the third. Any of them moving means the figure on the
+            // cashier's screen is no longer what is owed, so the row does not
+            // match and nothing at all is written.
+            db_handle
+                .prepare(
+                    "INSERT INTO payments (id, check_id, method, amount_minor, taken_by, at)
+        SELECT ?1, c.id, ?2, ?3, ?4, ?5
+        FROM checks c
+        WHERE c.id = ?6
+          AND c.status = 'open'
+          AND (SELECT COUNT(*) FROM rounds WHERE check_id = c.id) = ?7
+          AND (SELECT COUNT(*) FROM items i
+                 JOIN rounds r ON r.id = i.round_id
+                WHERE r.check_id = c.id AND i.voided_at IS NULL) = ?8
+          AND (SELECT COALESCE(SUM(a.qty_paid), 0) FROM payment_items a
+                 JOIN items i ON i.id = a.item_id
+                 JOIN rounds r ON r.id = i.round_id
+                WHERE r.check_id = c.id) = ?9",
+                )
+                .bind(&[
+                    db::text(&payment_id),
+                    db::text(&method),
+                    db::number(owed as f64),
+                    db::text(&staff_id),
+                    db::text(&at),
+                    db::text(check_id),
+                    db::number(before.rounds.len() as f64),
+                    db::number(live_line_count(&before) as f64),
+                    db::number(paid_units(&before) as f64),
+                ])?,
+            // [1] What it bought: every unit of every live line that nobody had
+            // settled yet. Set-based rather than a statement per line, so the
+            // batch is three statements whatever the size of the dinner.
+            //
+            // The allocation is what makes "pay the whole check" and "pay these
+            // two dishes" the same kind of event afterwards: there is no
+            // payment in this database whose subject is unknown, and a closed
+            // check's outstanding total computes to zero without a special case.
+            db_handle
+                .prepare(
+                    "INSERT INTO payment_items (payment_id, item_id, qty_paid)
+        SELECT ?1,
+               i.id,
+               i.qty - COALESCE((SELECT SUM(a.qty_paid) FROM payment_items a
+                                  WHERE a.item_id = i.id), 0)
+        FROM items i
+        JOIN rounds r ON r.id = i.round_id
+        WHERE r.check_id = ?2
+          AND i.voided_at IS NULL
+          AND i.qty - COALESCE((SELECT SUM(a.qty_paid) FROM payment_items a
+                                 WHERE a.item_id = i.id), 0) > 0
+          AND EXISTS (SELECT 1 FROM payments p WHERE p.id = ?1)",
+                )
+                .bind(&[db::text(&payment_id), db::text(check_id)])?,
+            // [2] The close, hanging off the payment rather than off a
+            // timestamp. `payment_id` is minted per request, so this can only
+            // be true for the request that minted it — which is the whole
+            // difference between this shape and the one it replaced.
             db_handle
                 .prepare(
                     "UPDATE checks
@@ -690,41 +794,18 @@ async fn pay(
             closed_at = ?2
         WHERE id = ?1
           AND status = 'open'
-          AND (SELECT COUNT(*) FROM rounds WHERE check_id = ?1) = ?3
-          AND (SELECT COUNT(*) FROM items i
-                 JOIN rounds r ON r.id = i.round_id
-                WHERE r.check_id = ?1 AND i.voided_at IS NULL) = ?4",
+          AND EXISTS (SELECT 1 FROM payments p WHERE p.id = ?3)",
                 )
-                .bind(&[
-                    db::text(check_id),
-                    db::text(&at),
-                    db::number(before.rounds.len() as f64),
-                    db::number(live_line_count(&before) as f64),
-                ])?,
-            db_handle
-                .prepare(
-                    "INSERT INTO payments (id, check_id, method, amount_minor, taken_by, at)
-        SELECT ?1, c.id, ?2, ?3, ?4, ?5
-        FROM checks c
-        WHERE c.id = ?6 AND c.closed_at = ?5",
-                )
-                .bind(&[
-                    db::text(&http::new_id("pay")),
-                    db::text(&method),
-                    db::number(total as f64),
-                    db::text(&staff_id),
-                    db::text(&at),
-                    db::text(check_id),
-                ])?,
+                .bind(&[db::text(check_id), db::text(&at), db::text(&payment_id)])?,
         ])
         .await?;
 
-    let closed = results
+    let paid = results
         .first()
         .and_then(|result| result.meta().ok().flatten())
         .and_then(|meta| meta.changes)
         .is_some_and(|changes| changes > 0);
-    if !closed {
+    if !paid {
         return Err(http::conflict("The check changed while you were paying. Try again."));
     }
 
@@ -748,8 +829,356 @@ async fn pay(
     Ok(Response::from_json(&detail)?)
 }
 
-/// How many lines on this check are still owed for. The payment's guard
-/// compares it against the database's own count a moment later.
+/// Take the money for part of a table, and leave the check open unless that was
+/// the last of it.
+///
+/// The sibling of [`pay`], and the request the owner actually made: four
+/// friends, one of whom is leaving, wanting to settle their own dish.
+///
+/// ## The unit is a unit of a line, not a line
+///
+/// `addProduct` in the waiter's cart merges a second tap of the same tile into
+/// the line already there, so four beers for four people is **one row with
+/// `qty 4`** — the most-split line there is. A route that could only take whole
+/// rows would fail exactly the case it exists for. So the body names
+/// `{ itemId, qty }` and the allocation records a quantity, which also means no
+/// `items` row is ever split or mutated: the row the kitchen ticket was
+/// rendered from, and that `print_jobs.item_id` points at, is byte-identical
+/// afterwards.
+///
+/// ## Why it needs a client key when [`pay`] did not
+///
+/// Because it does not close the check. "At most one payment row" used to fall
+/// out of "at most one request can close it"; a payment that leaves the table
+/// open has no close to hang on. The failure is `rounds.client_key`'s, and
+/// worse: a repeat of a per-item payment is indistinguishable from a
+/// legitimate *second* settlement of the same dish, so only the tablet can say
+/// which one it meant, and a retry that minted a fresh key would take the money
+/// twice.
+///
+/// ## `require_role(TILLS)`, unlike voiding
+///
+/// Voiding is `require_staff`, because the waiter who mis-sent a line is the
+/// right person to strike it off. Taking cash is not the same act, and the
+/// tablet in an apron pocket is not the one that should be able to.
+async fn pay_items(
+    req: &mut Request,
+    env: &Env,
+    identity: &Identity,
+    check_id: &str,
+) -> ApiResult<Response> {
+    middleware::require_role(identity, TILLS)?;
+    let staff_id = identity.staff_id.clone().unwrap_or_default();
+
+    let raw = body::read_json(req).await?;
+    let input = parse_pay_items(&raw)?;
+
+    let db_handle = crate::env::db(env)?;
+
+    // The same first question `send_round` asks, for the same reason: a key
+    // that already bought something means the reply was lost rather than the
+    // request. Answer with the check as it stands and write nothing.
+    if let Some(existing) = payment_check_id(&db_handle, &input.client_key).await? {
+        if existing != check_id {
+            return Err(http::conflict("That payment belongs to another check."));
+        }
+        let Some(detail) = db::check_detail(&db_handle, check_id).await? else {
+            return Err(http::internal());
+        };
+        return Ok(Response::from_json(&detail)?);
+    }
+
+    let Some(before) = db::check_detail(&db_handle, check_id).await? else {
+        return Err(http::not_found("No such check"));
+    };
+    if before.status != "open" {
+        return Err(http::conflict("That check has already been settled."));
+    }
+
+    /*
+     * The picks, checked against the check for the *message*.
+     *
+     * The SQL below is the safety — it refuses to write unless every line still
+     * has the units this payment claims — but a guard that fails tells the till
+     * only that something moved. A cashier holding cash needs to know which
+     * dish and how much of it is left, so the same facts are read here, off the
+     * same snapshot the amount was computed from, and turned into a sentence.
+     */
+    let mut picks = Vec::with_capacity(input.lines.len());
+    for line in &input.lines {
+        let Some(item) = before.item(&line.item_id) else {
+            return Err(http::bad_request("That line is not on this check."));
+        };
+        if item.voided_at.is_some() {
+            return Err(http::conflict_with(
+                format!("{} was struck off. Check the bill and try again.", item.name_snapshot),
+                http::code::CONFLICT,
+            ));
+        }
+        let unpaid = item.qty - item.qty_paid;
+        if line.qty > unpaid {
+            return Err(http::conflict_with(
+                format!(
+                    "Only {unpaid} of {} is still unpaid. Check the bill and try again.",
+                    item.name_snapshot
+                ),
+                http::code::CONFLICT,
+            ));
+        }
+        picks.push(totals::PaidPick {
+            price_minor_snapshot: item.price_minor_snapshot,
+            qty: line.qty,
+        });
+    }
+
+    // Priced from the Worker's own snapshots, never from the body. What the
+    // client sends is what it *showed*, and the two disagreeing is a refusal
+    // rather than a charge.
+    let amount = totals::picked_total_minor(&picks);
+    if amount != input.expected_amount_minor {
+        return Err(http::conflict_with(
+            format!("That comes to {amount} now. Check the bill and try again."),
+            http::code::CONFLICT,
+        ));
+    }
+
+    let at = http::now_iso();
+    let payment_id = http::new_id("pay");
+    // The same picks, numbered for each statement that joins them: the money
+    // binds seven values before them, the allocation binds one.
+    let money_picks = picks_sql(input.lines.len(), 8);
+    let allocation_picks = picks_sql(input.lines.len(), 2);
+
+    // [0] The money, guarded on every named line still having the units this
+    //     payment claims. All or nothing: one row or no row, so there is never
+    //     a half-allocated payment to unpick afterwards.
+    let mut money_args: Vec<JsValue> = vec![
+        db::text(&payment_id),
+        db::text(&input.method),
+        db::number(amount as f64),
+        db::text(&staff_id),
+        db::text(&at),
+        db::text(&input.client_key),
+        db::text(check_id),
+    ];
+    for line in &input.lines {
+        money_args.push(db::text(&line.item_id));
+        money_args.push(db::number(line.qty as f64));
+    }
+    money_args.push(db::number(input.lines.len() as f64));
+
+    let mut allocation_args: Vec<JsValue> = vec![db::text(&payment_id)];
+    for line in &input.lines {
+        allocation_args.push(db::text(&line.item_id));
+        allocation_args.push(db::number(line.qty as f64));
+    }
+
+    let results = db_handle
+        .batch(vec![
+            db_handle
+                .prepare(format!(
+                    "INSERT INTO payments (id, check_id, method, amount_minor, taken_by, at, client_key)
+        SELECT ?1, c.id, ?2, ?3, ?4, ?5, ?6
+        FROM checks c
+        WHERE c.id = ?7
+          AND c.status = 'open'
+          AND (SELECT COUNT(*) FROM items i
+                 JOIN rounds r ON r.id = i.round_id
+                 JOIN ({money_picks}) w ON w.item_id = i.id
+                WHERE r.check_id = c.id
+                  AND i.voided_at IS NULL
+                  AND i.qty - COALESCE((SELECT SUM(a.qty_paid) FROM payment_items a
+                                         WHERE a.item_id = i.id), 0) >= w.pay_qty) = ?{}",
+                    money_args.len()
+                ))
+                .bind(&money_args)?,
+            // [1] What it bought, hanging off the money having been written.
+            db_handle
+                .prepare(format!(
+                    "INSERT INTO payment_items (payment_id, item_id, qty_paid)
+        SELECT ?1, w.item_id, w.pay_qty
+        FROM ({allocation_picks}) w
+        WHERE EXISTS (SELECT 1 FROM payments p WHERE p.id = ?1)"
+                ))
+                .bind(&allocation_args)?,
+            // [2] The close, if that was the last unpaid unit on the check. A
+            //     batch cannot branch, so "close it if this finished it" is a
+            //     WHERE clause and `changes` is how the handler finds out which
+            //     way it went.
+            db_handle
+                .prepare(
+                    "UPDATE checks
+        SET status = 'paid',
+            closed_at = ?2
+        WHERE id = ?1
+          AND status = 'open'
+          AND EXISTS (SELECT 1 FROM payments p WHERE p.id = ?3)
+          AND NOT EXISTS (SELECT 1 FROM items i
+                            JOIN rounds r ON r.id = i.round_id
+                           WHERE r.check_id = ?1
+                             AND i.voided_at IS NULL
+                             AND i.qty > COALESCE((SELECT SUM(a.qty_paid) FROM payment_items a
+                                                    WHERE a.item_id = i.id), 0))",
+                )
+                .bind(&[db::text(check_id), db::text(&at), db::text(&payment_id)])?,
+        ])
+        .await?;
+
+    let took_it = changed(results.first());
+    if !took_it {
+        return Err(http::conflict("The bill changed while you were paying. Try again."));
+    }
+    let closed = changed(results.get(2));
+
+    let Some(detail) = db::check_detail(&db_handle, check_id).await? else {
+        return Err(http::internal());
+    };
+
+    // One event or the other, never both. `check.paid` means the card comes off
+    // the board and the table is free; announcing that for a table where three
+    // people are still eating would clear the till's screen mid-service.
+    let pub_sub = create_pub_sub(env);
+    if closed {
+        pub_sub
+            .emit(
+                &[RESTAURANT_CHANNEL],
+                "check.paid",
+                &json!({
+                    "checkId": detail.id,
+                    "tableId": detail.table_id,
+                    "method": input.method,
+                    "at": at,
+                }),
+            )
+            .await;
+    } else {
+        pub_sub
+            .emit(
+                &[RESTAURANT_CHANNEL],
+                "check.part_paid",
+                &json!({
+                    "checkId": detail.id,
+                    "tableId": detail.table_id,
+                    "method": input.method,
+                    "amountMinor": amount,
+                    "totalMinor": detail.total_minor,
+                    "outstandingMinor": detail.outstanding_minor,
+                    "at": at,
+                }),
+            )
+            .await;
+    }
+
+    Ok(Response::from_json(&detail)?)
+}
+
+/// Did this statement write anything? The batch's only way of answering a
+/// question, and the reason every guard here is a `WHERE` rather than an `if`.
+fn changed(result: Option<&worker::D1Result>) -> bool {
+    result
+        .and_then(|result| result.meta().ok().flatten())
+        .and_then(|meta| meta.changes)
+        .is_some_and(|changes| changes > 0)
+}
+
+/// Has this key already bought something? [`round_check_id`]'s twin for money.
+async fn payment_check_id(db: &D1Database, client_key: &str) -> ApiResult<Option<String>> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        check_id: String,
+    }
+    let row: Option<Row> = db
+        .prepare("SELECT check_id FROM payments WHERE client_key = ?1")
+        .bind(&[db::text(client_key)])?
+        .first(None)
+        .await?;
+    Ok(row.map(|row| row.check_id))
+}
+
+/// The picks, as an inline table a statement can join against.
+///
+/// Built from the **count** of picks and never from the ids themselves — the
+/// ids ride in as bound parameters — which is the same rule the catalogue's
+/// `products_by_id` follows and the reason no string from a client is ever
+/// spliced into SQL here.
+///
+/// `SELECT … UNION ALL SELECT …` rather than a bare `VALUES`, because SQLite
+/// names a bare `VALUES` subquery's columns `column1` and `column2`, and a
+/// statement whose meaning depends on knowing that is not one to read against a
+/// `wrangler d1` console at midnight.
+fn picks_sql(count: usize, first: usize) -> String {
+    let mut sql = format!("SELECT ?{first} AS item_id, ?{} AS pay_qty", first + 1);
+    for index in 1..count {
+        let item = first + index * 2;
+        let qty = item + 1;
+        sql.push_str(&format!(" UNION ALL SELECT ?{item}, ?{qty}"));
+    }
+    sql
+}
+
+/* -------------------------------------------- the per-item payment's body */
+
+/// One line of a split payment: which item, and how many of it.
+struct PayPick {
+    item_id: String,
+    qty: i64,
+}
+
+struct PayItemsInput {
+    method: String,
+    lines: Vec<PayPick>,
+    expected_amount_minor: i64,
+    client_key: String,
+}
+
+/// `payItemsSchema`, read the way every other body in this file is read.
+fn parse_pay_items(raw: &serde_json::Value) -> ApiResult<PayItemsInput> {
+    let fields = body::object(raw)?;
+    let method = fields.enum_of("method", &["cash", "card", "other"])?;
+    let expected_amount_minor = fields.int("expectedAmountMinor", &Int::MINOR)?;
+    let client_key =
+        fields.string("clientKey", &Str { trim: false, min: 8, max: 64, min_message: None })?;
+
+    let Some(lines) = raw.get("lines").and_then(|value| value.as_array()) else {
+        return Err(http::bad_request(format!(
+            "lines: Invalid input: expected array, received {}",
+            raw.get("lines").map_or("undefined", body::zod_type)
+        )));
+    };
+    if lines.is_empty() {
+        return Err(http::bad_request("lines: Pick something to pay for first"));
+    }
+    if lines.len() > 60 {
+        return Err(http::bad_request("lines: Too big: expected array to have <=60 items"));
+    }
+
+    let mut picks: Vec<PayPick> = Vec::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        let line = body::object(line)
+            .map_err(|error| http::bad_request(format!("lines[{index}]: {}", error.message)))?;
+        let item_id = line
+            .string("itemId", &Str::ID)
+            .map_err(|error| http::bad_request(format!("lines[{index}].{}", error.message)))?;
+        let qty = line
+            .int("qty", &Int::QTY)
+            .map_err(|error| http::bad_request(format!("lines[{index}].{}", error.message)))?;
+
+        // A body naming the same line twice would otherwise reach
+        // `PRIMARY KEY (payment_id, item_id)` and come back as a constraint
+        // violation — a 500 for what is a client mistake and deserves a
+        // sentence. It would also mean the guard counted one matching row for
+        // two claims and let the second through unchecked.
+        if picks.iter().any(|pick| pick.item_id == item_id) {
+            return Err(http::bad_request(format!("lines[{index}].itemId: Named twice")));
+        }
+        picks.push(PayPick { item_id, qty });
+    }
+
+    Ok(PayItemsInput { method, lines: picks, expected_amount_minor, client_key })
+}
+
+/// How many live lines this check has. One third of the payment's fingerprint;
+/// the guard compares it against the database's own count a moment later.
 fn live_line_count(detail: &db::CheckDetail) -> usize {
     detail
         .rounds
@@ -757,6 +1186,17 @@ fn live_line_count(detail: &db::CheckDetail) -> usize {
         .flat_map(|round| round.items.iter())
         .filter(|item| item.voided_at.is_none())
         .count()
+}
+
+/// How many units of this check somebody has already settled.
+///
+/// The component of the fingerprint that exists because of per-item payment,
+/// and the only one that can move without any row being added or struck off.
+/// Voided lines are counted too, deliberately: the SQL it is compared against
+/// sums every allocation on the check, and a line struck off after being paid
+/// for would otherwise make the two disagree for ever and wedge the check.
+fn paid_units(detail: &db::CheckDetail) -> i64 {
+    detail.rounds.iter().flat_map(|round| round.items.iter()).map(|item| item.qty_paid).sum()
 }
 
 /// `SELECT check_id FROM rounds WHERE client_key = ?1`.

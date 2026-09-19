@@ -237,7 +237,11 @@ export function CashierPage(props: RouteSectionProps) {
         event.name === 'round.sent' ||
         event.name === 'round.delivered' ||
         event.name === 'item.voided' ||
-        event.name === 'check.paid'
+        event.name === 'check.paid' ||
+        // A second till settling somebody else's dish changes which lines are
+        // still pickable on the check this one is looking at, and picking a
+        // line that has just been paid for is a 409 in front of a customer.
+        event.name === 'check.part_paid'
       ) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.check(event.data.checkId) });
       }

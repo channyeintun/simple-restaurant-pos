@@ -127,6 +127,13 @@ export const my: Messages = {
     backToChecks: 'စာရင်းများသို့ ပြန်သွားမည်',
     none: 'ဖွင့်ထားသည် မရှိပါ',
     takePayment: 'ငွေရှင်းမည်',
+    paySome: 'အချို့ကို ရှင်းမည်',
+    paySelected: 'ရွေးထားသည်ကို ရှင်းမည်',
+    picked: 'ရွေးထားသည်',
+    stillOwed: 'ကျန်ရှိငွေ',
+    paidSome: (paid: number, of: number) => `${of} ခုတွင် ${paid} ခု ရှင်းပြီး`,
+    pickLine: (name: string) => `${name} ကို ရှင်းမည်`,
+    partPaid: (amount: string) => `${amount} ရှင်းပြီး`,
     paymentHeadline: (name) => `${name} အတွက် ငွေရှင်းခြင်း`,
     paying: 'ငွေရှင်းနေသည်…',
     // `ငွေရှင်းပြီး` rather than a bare `ရှင်းပြီး`: with the money word in

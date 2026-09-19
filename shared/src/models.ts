@@ -468,6 +468,19 @@ export const itemSchema = z.object({
    */
   prepMinutesSnapshot: prepMinutesSchema,
   qty: z.number().int().min(1).max(99),
+  /**
+   * How many of `qty` somebody has already settled.
+   *
+   * Zero on every line until part of a table pays. A quantity rather than a
+   * flag because a waiter tapping the same tile four times makes one line with
+   * `qty 4` — four beers for four people is a single row, and it is the row a
+   * table is most likely to want split.
+   *
+   * Derived, not stored on the row: it is the sum of this line's allocations in
+   * `payment_items`. Sent because every screen that shows a bill has to be able
+   * to say what is left on each line without asking a second question.
+   */
+  qtyPaid: z.number().int().min(0).max(99),
   /** Free text for the kitchen: "no chilli", "extra rice". The only modifier. */
   note: z.string().max(120).nullable(),
   /** Set when the line is voided. The row stays; the total stops counting it. */
@@ -484,10 +497,10 @@ export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
 /**
  * Money taken against a check.
  *
- * One row per check in V1 — there are no split payments — but it is a table
- * rather than three columns on `checks` because "how the money arrived" is a
- * different fact from "this seating happened", and the day the restaurant does
- * want to take half in cash the shape already fits.
+ * Many rows per check now that part of a table can settle on its own. It was
+ * always a table rather than three columns on `checks`, because "how the money
+ * arrived" is a different fact from "this seating happened" — and 0004 is the
+ * day that paid off.
  */
 export const paymentSchema = z.object({
   id: idSchema,
@@ -521,6 +534,45 @@ export const payCheckSchema = z.object({
   expectedTotalMinor: minorSchema,
 });
 export type PayCheckInput = z.infer<typeof payCheckSchema>;
+
+/**
+ * Settling part of a table: which units of which lines, and what the cashier
+ * believed they came to.
+ *
+ * The sibling of {@link payCheckSchema} and the same rules, with one more
+ * because the check does **not** close: a payment that leaves a table open has
+ * no close to hang its uniqueness on, so it carries a `clientKey` the way a
+ * round does. The failure is identical and worse — the request commits, the
+ * reply is lost, the till cannot tell that from a request that never arrived,
+ * and a retry that mints a new key takes the money twice. A repeat of a
+ * per-item payment is also indistinguishable from a legitimate second
+ * settlement of the same dish, which is exactly why the tablet has to say which
+ * one it means rather than leaving the Worker to guess.
+ *
+ * `lines` names units, not rows: `{ itemId, qty }`. The amount is not in the
+ * body — the Worker prices the named units from their own snapshots — and
+ * `expectedAmountMinor` is what was on the button when the cash was taken, so
+ * a client that displayed one figure and named different rows is refused rather
+ * than charged.
+ */
+export const payItemsSchema = z.object({
+  method: paymentMethodSchema,
+  lines: z
+    .array(
+      z.object({
+        itemId: idSchema,
+        qty: z.number().int().min(1).max(99),
+      }),
+    )
+    // At least one — a payment that bought nothing is not a payment. Sixty is
+    // `sendRound`'s ceiling and the same reasoning: more lines than that on one
+    // check is a data-entry accident rather than a dinner.
+    .min(1)
+    .max(60),
+  expectedAmountMinor: minorSchema,
+  clientKey: z.string().min(8).max(64),
+});
+export type PayItemsInput = z.infer<typeof payItemsSchema>;
 
 /* --------------------------------------------------------------- print job */
 
@@ -698,6 +750,20 @@ export const checkSummarySchema = z.object({
   oldestOutstandingTargetMinutes: prepMinutesSchema,
   /** Live lines only — a voided line is on the paper trail, not on the bill. */
   totalMinor: minorSchema,
+  /**
+   * What is still owed on this table.
+   *
+   * On the card, and not only on the check behind it, because the board is
+   * where a cashier decides which table to go and settle. A card that went on
+   * saying 30.000 Ks after two of the four diners had paid would send somebody
+   * to take the money twice, and the whole point of the board is that it can be
+   * read across a counter without opening anything.
+   *
+   * Equal to `totalMinor` on every check nobody has split, which is most of
+   * them — so the two figures differing is itself the signal that a table is
+   * part way through settling.
+   */
+  outstandingMinor: minorSchema,
 });
 export type CheckSummary = z.infer<typeof checkSummarySchema>;
 
@@ -747,6 +813,19 @@ export const checkDetailSchema = z.object({
   rounds: z.array(roundDetailSchema),
   payments: z.array(paymentSchema),
   totalMinor: minorSchema,
+  /**
+   * What is still owed: the lines nobody has paid for, priced.
+   *
+   * Beside `totalMinor` rather than instead of it, because the two are
+   * different questions and a screen that confused them would take the wrong
+   * money. `totalMinor` is what the meal cost and belongs on the bill;
+   * this is what the customer hands over, and it is the figure every control
+   * that takes money has to be showing.
+   *
+   * Zero on a closed check, and zero on an open one whose every line has been
+   * settled for the instant before the close lands.
+   */
+  outstandingMinor: minorSchema,
 });
 export type CheckDetail = z.infer<typeof checkDetailSchema>;
 

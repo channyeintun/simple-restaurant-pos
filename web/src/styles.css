@@ -1147,7 +1147,14 @@ md-outlined-icon-button {
 
 .sent-line {
   display: grid;
-  grid-template-columns: 2.5ch 1fr auto auto;
+  /*
+   * `minmax` on the quantity column rather than a flat `2.5ch`, because while
+   * the bill is being split that cell holds a 48px button. A fixed column would
+   * let the button overflow across the dish name; this lets the column grow to
+   * whatever is in it and collapse back to two and a half characters when the
+   * cashier is only reading.
+   */
+  grid-template-columns: minmax(2.5ch, max-content) 1fr auto auto;
   align-items: center;
   gap: var(--pos-gap);
   min-height: var(--pos-touch);
@@ -1164,6 +1171,78 @@ md-outlined-icon-button {
 .sent-line-qty {
   font-family: var(--pos-typeface-numeric);
   font-weight: 700;
+}
+
+/*
+ * The quantity cell, while the bill is being split.
+ *
+ * The same cell rather than a checkbox beside it: the row already has four
+ * columns on the narrowest pane in the app, and the number is already where
+ * somebody looks to count. It becomes a button in place, so the eye does not
+ * have to find a new target when the mode changes.
+ *
+ * A full `--pos-touch` square, which is the brief's minimum and not a
+ * suggestion — this is tapped repeatedly, at speed, by somebody holding notes
+ * in their other hand. The column above is `minmax`ed to let it.
+ */
+.sent-line-qty.pick {
+  min-height: var(--pos-touch);
+  min-width: var(--pos-touch);
+  border: 2px solid var(--md-sys-color-outline);
+  border-radius: var(--pos-radius-row);
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  font-family: var(--pos-typeface-numeric);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* Picked reads as filled, not as a tick in a corner: the whole control changes
+   colour, because this is read across a counter at arm's length. */
+.sent-line-qty.pick[aria-pressed='true'] {
+  border-color: var(--md-sys-color-primary);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.sent-line-qty.pick:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A picked row lifts slightly, so the selection is legible from the shape of
+   the list and not only from four small controls down its left edge. */
+.sent-line[data-picked='true'] {
+  background: var(--md-sys-color-surface-variant);
+  border-radius: var(--pos-radius-row);
+  /* The tint has to reach past the text, or a picked row reads as a highlighted
+     word rather than as a selected line. */
+  padding: 0 var(--pos-gap);
+  margin: 0 calc(var(--pos-gap) * -1);
+}
+
+/*
+ * What the payment dialog is about to charge for, itemised.
+ *
+ * The modal covers the bill, so it has to carry its own answer to "which
+ * dishes is this". Scrolls rather than grows: a table settling ten lines at
+ * once must not push the method chips and the confirm button off a tablet.
+ */
+.picked-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.picked-line {
+  display: grid;
+  grid-template-columns: 2.5ch 1fr auto;
+  align-items: center;
+  gap: var(--pos-gap);
+  min-height: 2rem;
 }
 
 /* --------------------------------------------------------------- cashier */

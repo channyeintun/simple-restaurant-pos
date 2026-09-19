@@ -29,9 +29,9 @@ import { type CheckSummary, type RealtimeEvent, roundTargetMinutes } from '@pos/
  * Turn a table id into the name on the card.
  *
  * A parameter rather than a lookup inside, because `check.opened` carries the
- * table's **id** and not its name — the event catalogue is fixed at six events
- * with fixed payloads, and widening one to carry a name the client already has
- * would be a deviation to save a `Map.get`. The cashier's page already holds
+ * table's **id** and not its name — the event catalogue has fixed payloads, and
+ * widening one to carry a name the client already has would be a deviation to
+ * save a `Map.get`. The cashier's page already holds
  * the tables list; this is how it gets in.
  *
  * Null for takeaway, and null again for a table this client has never heard of
@@ -81,6 +81,7 @@ export function applyBoardEvent(
           oldestOutstandingAt: null,
           oldestOutstandingTargetMinutes: 0,
           totalMinor: 0,
+          outstandingMinor: 0,
         },
       ];
     }
@@ -112,6 +113,7 @@ export function applyBoardEvent(
             ? roundTargetMinutes(event.data.items)
             : check.oldestOutstandingTargetMinutes,
           totalMinor: event.data.checkTotal,
+          outstandingMinor: movedBy(check, event.data.checkTotal),
         };
       });
     }
@@ -120,6 +122,25 @@ export function applyBoardEvent(
       return patch(board, event.data.checkId, (check) => ({
         ...check,
         totalMinor: event.data.checkTotal,
+        outstandingMinor: movedBy(check, event.data.checkTotal),
+      }));
+    }
+
+    case 'check.part_paid': {
+      /*
+       * Money arrived and the table is still sitting there. Both figures are
+       * absolute — see `checkPartPaidSchema` — so a board that missed the last
+       * event is corrected here rather than compounding the error.
+       *
+       * The card stays. That is the entire difference between this event and
+       * `check.paid`, and it is why an eighth event had to exist: clearing a
+       * table off the till because one of four diners settled would take the
+       * card away while the other three are still eating.
+       */
+      return patch(board, event.data.checkId, (check) => ({
+        ...check,
+        totalMinor: event.data.totalMinor,
+        outstandingMinor: event.data.outstandingMinor,
       }));
     }
 
@@ -192,6 +213,27 @@ export function boardNeedsRefetch(
 }
 
 /** Replace one check, or leave the board exactly as it was. */
+/**
+ * What is still owed after the gross total moved to `nextTotal`.
+ *
+ * `round.sent` and `item.voided` carry the new **gross** and say nothing about
+ * settlement, so the outstanding figure is moved by the same amount. That is
+ * exact rather than approximate, and the argument is short: every change those
+ * two events describe is a change in *unpaid* units. A new round is food nobody
+ * has paid for, and a void can only strike a line with no money against it —
+ * the Worker refuses to void one that has been settled, because there is no
+ * refund in this API to undo it with.
+ *
+ * Clamped at zero for the same reason `lineOutstandingMinor` is: a board that
+ * missed an event has a stale gross, and a negative here would quietly discount
+ * the rest of the table rather than failing where somebody would see it. The
+ * poll behind the stream corrects the staleness within five seconds.
+ */
+function movedBy(check: CheckSummary, nextTotal: number): number {
+  const moved = check.outstandingMinor + (nextTotal - check.totalMinor);
+  return moved < 0 ? 0 : moved;
+}
+
 function patch(
   board: readonly CheckSummary[],
   checkId: string,

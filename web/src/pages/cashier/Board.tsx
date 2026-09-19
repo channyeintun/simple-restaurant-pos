@@ -69,8 +69,25 @@ export function CashierBoard() {
                   <span class="check-card-name">
                     {check.tableName ?? m().waiter.takeaway}
                   </span>
-                  <span class="check-card-total money">{app.money(check.totalMinor)}</span>
+                  {/*
+                    What is still owed, which on a table nobody has split is
+                    the same number this always showed.
+
+                    The board is where a cashier decides which table to walk
+                    over to, so it is the screen where showing the gross total
+                    of a part-settled check would send somebody to take the
+                    money a second time. The figures differing is itself the
+                    signal that a table is part way through paying, which is
+                    why the line below says what has been settled rather than
+                    leaving the card to be read twice.
+                  */}
+                  <span class="check-card-total money">{app.money(check.outstandingMinor)}</span>
                   <span class="check-card-meta">
+                    <Show when={check.outstandingMinor !== check.totalMinor}>
+                      <span class="badge" data-tone="ok">
+                        {m().cashier.partPaid(app.money(check.totalMinor - check.outstandingMinor))}
+                      </span>{' '}
+                    </Show>
                     {m().waiter.rounds(check.roundCount)} · {check.openedByName} ·{' '}
                     {app.clock(check.openedAt)}
                   </span>

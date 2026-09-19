@@ -118,7 +118,8 @@ checks      (id, table_id NULL, opened_by, status open|paid|voided, opened_at, c
 rounds      (id, check_id, seq, sent_by, sent_at, client_key, delivered_at, delivered_by)
 items       (id, round_id, product_id, name_snapshot, price_minor_snapshot,
              prep_minutes_snapshot, qty, note, voided_at, voided_by)
-payments    (id, check_id, method cash|card|other, amount_minor, taken_by, at)
+payments    (id, check_id, method cash|card|other, amount_minor, taken_by, at, client_key)
+payment_items (payment_id, item_id, qty_paid)
 print_jobs  (id, round_id, item_id, kind ticket|void, status pending|printed|failed, attempts,
              last_error, created_at, printed_at)
 ```
@@ -150,6 +151,11 @@ name.
   bill must not change because somebody edited a product in the backoffice afterwards.
 - Money is **integer minor units**. No floats anywhere, on either side, ever. Currency
   code, symbol and minor-unit digits come from wrangler vars (see below).
+- A check has a **gross total** and an **outstanding total**, and they are different
+  questions. `checkTotalMinor` is what the meal cost and belongs on the bill;
+  `checkOutstandingMinor` is what the customer still hands over, and it is what every
+  control that takes money must be showing. Both are twinned. A receipt that dropped the
+  dishes somebody had already paid for would be a receipt for a meal nobody ate.
 - **Voiding an item on a sent round** creates a `void` print job, so the kitchen learns.
   Voiding is never a delete: `voided_at` and `voided_by` are set and the row stays.
 - There are **no preparing/ready states**, because the kitchen has a printer rather
@@ -332,6 +338,45 @@ ESC/POS to a network printer on TCP 9100 (host from config).
 What a ticket *says* is pure logic and therefore lives twice — `shared/src/ticket.ts` and
 `api/core/src/ticket.rs`, same cases both sides. What it *is* on the wire (ESC/POS bytes)
 belongs to the agent alone.
+
+### Paying for part of a table
+
+Four friends, one of whom is leaving. Every sent line on the cashier's check can be
+settled on its own, the check stays open until nothing on it is unpaid, and the existing
+pay-the-whole-table flow is untouched.
+
+The unit of settlement is **a unit of a line, not a line**. `addProduct` merges a second
+tap of the same tile into the line already there, so four beers for four people is one
+row with `qty 4` — the most-split line there is, and the one a row-only design would
+fail. `payment_items (payment_id, item_id, qty_paid)` records the quantity, so no `items`
+row is ever split or mutated and `print_jobs.item_id`, `live_line_count` and the manual
+reprint keep meaning exactly what they meant.
+
+- **No money is stored on the allocation.** What it came to is
+  `line_total_minor(price_minor_snapshot, qty_paid)`, and `price_minor_snapshot` is
+  frozen at send time. One money column in the money table, and no `price * qty` in SQL.
+- **The whole-check route writes allocations too**, covering every still-unpaid unit. So
+  no payment in this database has an unknown subject, and a closed check's outstanding
+  total computes to zero with no special case.
+- **A check closes in the same batch as the payment that settles its last unit**, guarded
+  on `NOT EXISTS (a live line with unpaid units)`. There is still no route that closes a
+  check without money.
+- **A line with any money against it cannot be voided.** `amount_minor >= 0` means a
+  refund is not expressible, so striking off a paid dish would leave money pointing at
+  nothing and tell the kitchen to cancel food somebody bought.
+- **`payments.client_key`**, with a partial unique index, exactly as `rounds.client_key`.
+  A payment that leaves the check open has no close to hang its uniqueness on, and a
+  retry after a lost reply that minted a fresh key would take the money twice. The till
+  keeps the key in device storage (`state/payment.ts`), not in a signal, because the
+  failure it exists for is the one where the screen goes away.
+
+**The fingerprint grew a third component.** `POST /checks/:id/pay` guarded its close on
+the check's round count and live line count. Neither moves when somebody settles two
+dishes out of six, so a till holding an older screen would have charged the full total on
+top — the sharpest hazard in the feature. It now counts settled units as well. The same
+change turned the batch around: the payment is written first carrying the whole guard,
+and the close hangs off `EXISTS (the payment)`, because the old shape guarded the INSERT
+on `closed_at = ?stamp` and two pays in the same millisecond compute the same stamp.
 
 ### Printing by hand
 
@@ -521,9 +566,12 @@ Nothing beyond this.
 - **Cashier:** live open checks → void → pay → close → printer failure banner.
 - **Backoffice:** the six lists above.
 
-**Out of scope:** split payments, discounts, modifiers beyond free-text notes, table
-transfer/merge, kitchen display, offline sync, reports beyond the daily total,
-multi-restaurant.
+**Out of scope:** discounts, modifiers beyond free-text notes, table transfer/merge,
+kitchen display, offline sync, reports beyond the daily total, multi-restaurant, refunds.
+
+Split payments **were** out of scope and are now in: `0004_pay_by_item.sql` and the
+Paying for part of a table section below. The line about them is gone from this list
+rather than struck through, because a scope list nobody trusts is worse than no list.
 
 ---
 

@@ -130,16 +130,22 @@ export const markRoundPrinted = (roundId: string): Promise<void> =>
   post<void>(`/print-jobs/by-round/${roundId}/printed`);
 
 /**
- * Take the money and close the check.
+ * Settle everything still owed on a check, and close it.
  *
- * `expectedTotalMinor` is what the cashier was looking at when they took it. If
- * the check has moved since — a round sent at the table, a line struck off —
- * the Worker refuses with a 409 whose message carries the new figure, and the
- * screen shows it rather than charging a number nobody agreed to.
+ * `expectedTotalMinor` keeps its name on the wire and no longer quite means it:
+ * what it is compared against is what is **owed**, which on a check nobody has
+ * split is the same number and on one where two of the four diners have paid is
+ * not. The name stays because renaming a required field is a 400 for every till
+ * that has had the page open since before the deploy — and a till sits on one
+ * page load for a whole service by design.
  *
- * The amount is not a parameter. It is the check's own total, computed by the
- * Worker, so there is no route by which this client decides what a customer
- * paid.
+ * If the check has moved since the cashier read it — a round sent at the table,
+ * a line struck off, somebody settling their own dish — the Worker refuses with
+ * a 409 whose message carries the new figure, and the screen shows that rather
+ * than charging a number nobody agreed to.
+ *
+ * The amount is not a parameter. The Worker computes it, so there is no route
+ * by which this client decides what a customer paid.
  */
 export const payCheck = (
   checkId: string,
@@ -149,6 +155,38 @@ export const payCheck = (
   post<unknown>(`/checks/${checkId}/pay`, { method, expectedTotalMinor }).then((body) =>
     checkDetailSchema.parse(body),
   );
+
+/**
+ * Settle some of a table: these units of these lines, and no more.
+ *
+ * The check stays open unless this was the last of it, which is what lets four
+ * friends leave one at a time.
+ *
+ * `lines` names units rather than rows — `{ itemId, qty }` — because a waiter
+ * tapping the same tile four times produces one line with `qty 4`, and four
+ * beers for four people is the split a table is most likely to want.
+ *
+ * `clientKey` is not optional and must be the **same** key on a retry. It comes
+ * from `state/payment.ts`, which keeps it in this tablet's storage rather than
+ * in a signal, because the failure it exists for is precisely the one where the
+ * screen goes away: the request commits, the reply is lost, and a retry with a
+ * fresh key charges the customer twice. `expectedAmountMinor` is what was on
+ * the button when the cash was counted, so a client that showed one figure and
+ * named different lines is refused instead of charged.
+ */
+export const payItems = (
+  checkId: string,
+  method: PaymentMethod,
+  lines: readonly { itemId: string; qty: number }[],
+  expectedAmountMinor: number,
+  clientKey: string,
+): Promise<CheckDetail> =>
+  post<unknown>(`/checks/${checkId}/items/pay`, {
+    method,
+    lines,
+    expectedAmountMinor,
+    clientKey,
+  }).then((body) => checkDetailSchema.parse(body));
 
 /* -------------------------------------------------------------- print jobs */
 
