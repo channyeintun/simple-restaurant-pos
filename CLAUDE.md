@@ -230,9 +230,20 @@ interval is actually insuring against, and localhost cannot test them.
 So:
 
 - **Only the cashier page subscribes.** One channel: `restaurant`.
-- **Waiter tablets never subscribe.** They fetch the table's check when the table is
-  opened. A waiter is looking at one table at a time and has just caused the change they
-  are looking at.
+- **Waiter tablets never subscribe.** They **poll** `['checks']` every 10 s while the
+  page is visible — `createPoll` in `web/src/lib/poll.ts`, mounted once in `WaiterPage`.
+  A waiter has caused nearly every change they are looking at, which is why they do not
+  need a stream; the exception is **money**, which happens on the till across the room
+  and is the one thing that frees a table. Until that reaches the grid the waiter is
+  looking at an occupied table with a total owed while the customers put their coats on.
+
+  Polling and not subscribing, because the two budgets are not the same size: four
+  tablets on the stream would be 1,440 Upstash commands an hour against 500,000 a month,
+  and the same four polling is about 17,000 Worker requests a day against 100,000. One
+  invalidation covers the grid and the open pane, because `openChecks`, `tableCheck` and
+  `check` all live under the `['checks']` prefix and solid-query only refetches what is
+  mounted. Hidden stops it outright, and becoming visible runs it once immediately — a
+  tablet out of a pocket should not show a ten-minute-old floor for another ten seconds.
 - **The printer agent never subscribes.** It polls `GET /print-jobs?status=pending`
   and acks with `POST /print-jobs/:id/{printed|failed}`. Unacked jobs stay
   pending, which is what makes an agent restart or a power cut self-healing.

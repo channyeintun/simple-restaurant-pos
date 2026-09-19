@@ -1,10 +1,23 @@
 import type { RouteSectionProps } from '@solidjs/router';
 import { useParams } from '@solidjs/router';
+import { useQueryClient } from '@tanstack/solid-query';
 import { Show, createSignal } from 'solid-js';
 import { StaffBar } from '../components/ui.js';
+import { createPoll } from '../lib/poll.js';
 import { useApp } from '../state/app.js';
 import { useLocale } from '../state/locale.js';
 import { TablesPane } from './waiter/TablesPane.js';
+
+/**
+ * How often a waiter tablet asks what has changed on the floor.
+ *
+ * Ten seconds, not the cashier's five. The till's number is read by somebody
+ * standing still with a customer in front of them; this one is read by somebody
+ * walking, and the thing it has to carry — a table that has been settled and is
+ * free to seat — does not become urgent inside ten seconds. It is also half the
+ * requests, which is the half of the decision that can be counted.
+ */
+const FLOOR_POLL_MS = 10_000;
 
 /**
  * The waiter's screen: tables on the left, the order on the right.
@@ -33,7 +46,33 @@ export function WaiterPage(props: RouteSectionProps) {
   const { m } = useLocale();
   const app = useApp();
   const params = useParams();
+  const queryClient = useQueryClient();
   const [signingOut, setSigningOut] = createSignal(false);
+
+  /*
+   * What the cashier did, on the waiter's screen.
+   *
+   * Everything else a waiter sees is something a waiter caused — they tapped
+   * Send, so they have the new round in their hand. Payment is the exception:
+   * it happens on a different tablet, across the room, and until this arrives
+   * the grid goes on showing a table as occupied, with a total owed, while the
+   * customers are standing up. Settling is also the only thing that *frees* a
+   * table, so it is the one change a waiter is actually waiting on.
+   *
+   * The `['checks']` prefix and not three separate keys: `openChecks`,
+   * `tableCheck` and `check` all live under it, and solid-query only refetches
+   * queries that are mounted — so this is one request for the grid, plus one
+   * for the pane beside it if a table is open, and nothing at all for the
+   * dozens of table checks this tablet has looked at today.
+   *
+   * It lives here rather than in `TablesPane` because the grid is not the only
+   * thing that goes stale: a waiter standing inside a table's order pane when
+   * the cashier settles it needs that pane to stop being an open check, or the
+   * next Send adds a round to a bill that has been paid.
+   */
+  createPoll(FLOOR_POLL_MS, () => {
+    void queryClient.invalidateQueries({ queryKey: ['checks'] });
+  });
 
   const signOut = () => {
     setSigningOut(true);
