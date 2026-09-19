@@ -576,12 +576,31 @@ agent is the system.
 
 ## Staying inside the free tiers
 
-The design is bounded by one number: **the realtime keepalive**.
-`@upstash/realtime`'s SSE handler publishes a keepalive **every 10 seconds per
-open connection** — 6 a minute, 360 Redis commands per connection-hour — and it
-is not configurable from outside the library. (It is `KEEPALIVE_INTERVAL_MS` in
-`api/src/realtime.rs`, and the reference app's README covers it under *Upstash
-Redis — the tight one*.) Upstash's free tier is 500,000 commands a month.
+The design is bounded by one number: **the realtime keepalive**. The SSE handler
+publishes one **every 10 seconds per open connection** — 6 a minute, 360 Redis
+commands per connection-hour, because the ping goes out through Redis and comes
+back on the subscription. Upstash's free tier is 500,000 commands a month.
+
+That interval is ours, not a library's. `api/src/realtime.rs` is a hand-written
+port of `@upstash/realtime`'s wire protocol — the npm package is not a
+dependency of anything here — so `KEEPALIVE_INTERVAL_MS` is a constant in this
+repo that could be raised tomorrow. It has not been, and the reason is worth
+writing down rather than rediscovering:
+
+- **The budget is not tight enough to spend risk on.** The table below lands at
+  ~35% of the free tier. Lengthening the interval would buy back maybe 90,000
+  commands a month that nothing is asking for.
+- **What it would cost is the thing nothing else provides.** A ping is the only
+  traffic that proves the *whole* path — browser to Worker to Redis and back —
+  is still carrying bytes. Idle-connection timeouts in the middle of that path
+  are exactly the kind of thing that is fine on a desk and not fine on a shop's
+  Wi-Fi through a router somebody else configured, and 10 s is comfortably under
+  every common one.
+
+Probing settled the half of this that could be settled: Upstash does **not**
+reap an idle subscription (verified quiet for 5 minutes), so the ping is not
+holding the Redis end open. The client ignores `ping` frames entirely. What
+remains unverified is every hop in between, and localhost cannot answer it.
 
 360 an hour is affordable once and ruinous four times over, so:
 

@@ -213,11 +213,19 @@ cookie is what keeps strangers out. Note it under Known limitations in the READM
 
 ## Realtime, and the free-tier budget
 
-The design is bounded by one number: `@upstash/realtime`'s SSE handler publishes a
-keepalive **every 10 seconds per open connection** — 360 Redis commands per
-connection-hour, not configurable from outside the library. (futsal README, *Upstash
-Redis — the tight one*; the interval is `KEEPALIVE_INTERVAL_MS` in
-`api/src/realtime.rs`.) Upstash's free tier is 500,000 commands a month.
+The design is bounded by one number: the SSE handler publishes a keepalive **every 10
+seconds per open connection** — 360 Redis commands per connection-hour, because the ping
+travels out through Redis and comes back on the subscription. Upstash's free tier is
+500,000 commands a month.
+
+`KEEPALIVE_INTERVAL_MS` in `api/src/realtime.rs` is **ours**. That file is a hand-written
+port of `@upstash/realtime`'s wire protocol and the npm package is not a dependency, so
+nothing outside this repo pins the interval — earlier wording here said otherwise and was
+wrong. It stays at 10 s on purpose: the budget lands at ~35% of the tier, so there is
+nothing to buy, and the ping is the only traffic that proves the whole path is still
+carrying bytes through whatever router a shop happens to own. Upstash itself does not reap
+an idle subscription (probed, quiet for 5 minutes); the hops in between are what the
+interval is actually insuring against, and localhost cannot test them.
 
 So:
 
