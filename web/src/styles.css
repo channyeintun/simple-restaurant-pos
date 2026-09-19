@@ -1266,3 +1266,117 @@ md-outlined-icon-button {
   /* Done is quieter than everything still to do. */
   opacity: 0.65;
 }
+
+/* ----------------------------------------------------------------- print */
+
+/*
+ * The one thing this app ever puts on paper from a browser.
+ *
+ * While there is no printer agent in the building, a waiter or a cashier taps
+ * Print and the operating system's dialog prints a kitchen ticket. The sheet is
+ * rendered into the document at all times and hidden, rather than being built
+ * when the button is pressed: `window.print()` is synchronous and blocks, so
+ * anything that had to be laid out first would race the dialog.
+ */
+.print-sheet {
+  display: none;
+}
+
+@media print {
+  /*
+   * The app goes away entirely and the sheet takes the page. `display: none`
+   * rather than `visibility: hidden`, because a hidden element still occupies
+   * its layout and would push the ticket onto page two of a receipt roll.
+   */
+  .app {
+    display: none !important;
+  }
+
+  .print-sheet {
+    display: block;
+  }
+
+  /*
+   * No `size` declaration, deliberately. Fixing it at 80mm would be right for a
+   * receipt roll and wrong for the A4 inkjet in the back office, and this
+   * exists precisely because nobody knows yet what the thing is plugged into.
+   * The margin is what keeps it off the edge either way, and the width below
+   * keeps it a slip rather than a banner when it lands on a big sheet.
+   */
+  @page {
+    margin: 8mm;
+  }
+
+  body {
+    background: #fff;
+    /* Print is ink on white; the app's 17px screen scale is wrong here and the
+       amber and blue of the interface mean nothing in black and white. */
+    font-size: 12pt;
+  }
+}
+
+/*
+ * The ticket itself. Monospace throughout, because it is read in a hurry in bad
+ * light next to a hot stove, and because a fixed pitch is what makes the
+ * quantity column line up down the left edge — the same reason the ESC/POS
+ * version pads it.
+ */
+.ticket {
+  max-width: 76mm;
+  font-family: var(--pos-typeface-numeric);
+  color: #000;
+  line-height: 1.35;
+}
+
+.ticket-head {
+  text-align: center;
+  font-weight: 700;
+}
+
+.ticket-table {
+  font-size: 2em;
+  line-height: 1.1;
+}
+
+.ticket-round {
+  font-size: 1.4em;
+}
+
+.ticket-meta {
+  font-size: 0.9em;
+  font-weight: 400;
+}
+
+.ticket-rule {
+  border: 0;
+  border-top: 1px dashed #000;
+  margin: 6px 0;
+}
+
+/* One line of the order. Grid rather than flex so the quantity column is the
+   same width on every row whatever the dish is called. */
+.ticket-line {
+  display: grid;
+  grid-template-columns: 3ch 1fr;
+  gap: 6px;
+  font-size: 1.5em;
+  font-weight: 700;
+  line-height: 1.25;
+  /* A dish must never be split across a page break — half a line on the next
+     sheet reads as a different order. */
+  break-inside: avoid;
+  margin-bottom: 4px;
+}
+
+.ticket-qty {
+  text-align: right;
+}
+
+/* The note is the one thing on the slip that changes what the kitchen *does*
+   rather than how much of it, so it is indented under its dish and marked —
+   it must not be readable as another line of the order. */
+.ticket-note {
+  grid-column: 2;
+  font-size: 0.7em;
+  font-weight: 400;
+}

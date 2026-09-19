@@ -3,7 +3,8 @@ import { useNavigate, useParams } from '@solidjs/router';
 import { useQueryClient } from '@tanstack/solid-query';
 import { For, Show, createEffect, createMemo, createSignal, on } from 'solid-js';
 import { ApiError } from '../../api/client.js';
-import { deliverRound, sendRound, voidItem } from '../../api/orders.js';
+import { deliverRound, markRoundPrinted, sendRound, voidItem } from '../../api/orders.js';
+import { PrintSheet, createTicketPrinter, ticketForRound } from '../../components/PrintSheet.js';
 import {
   Button,
   Chip,
@@ -552,6 +553,21 @@ function SentRounds(props: {
   const { m } = useLocale();
   const app = useApp();
   const now = createNow();
+  const printer = createTicketPrinter();
+
+  /**
+   * Put this round's ticket on paper, then tell the Worker it happened.
+   *
+   * The ack is fired and forgotten on purpose. It is bookkeeping — it stops the
+   * cashier's stuck-queue banner sitting amber and stops an agent reprinting
+   * the backlog later — and a waiter standing at a table with a slip in their
+   * hand should not be shown an error about it. If it fails the job stays
+   * pending, which is the state it was already in.
+   */
+  const printRound = (round: CheckDetail['rounds'][number]) => {
+    printer.print(ticketForRound(props.check, round, app.config().tzOffsetMinutes));
+    void markRoundPrinted(round.id).catch(() => {});
+  };
 
   /**
    * Where this round stands, recomputed as the clock ticks.
@@ -570,6 +586,7 @@ function SentRounds(props: {
 
   return (
     <div style={{ 'max-height': '45%', overflow: 'auto' }}>
+      <PrintSheet doc={printer.doc()} />
       <For each={props.check.rounds}>
         {(round) => (
           <div class="sent-round" data-state={timing(round).state}>
@@ -599,6 +616,9 @@ function SentRounds(props: {
                     <Show when={round.deliveredByName}>
                       {(carrier) => <span>{carrier()}</span>}
                     </Show>
+                    <Button variant="text" onClick={() => printRound(round)}>
+                      {m().timing.print}
+                    </Button>
                   </>
                 }
               >
@@ -614,6 +634,15 @@ function SentRounds(props: {
                     {m().timing.late}
                   </span>
                 </Show>
+                {/*
+                  Print sits before Delivered, in the order the two things
+                  happen: the slip goes to the kitchen, the food comes back.
+                  It stays available after delivery too — a round whose ticket
+                  was lost is exactly the one somebody needs to print again.
+                */}
+                <Button variant="text" onClick={() => printRound(round)}>
+                  {m().timing.print}
+                </Button>
                 <Button
                   variant="tonal"
                   disabled={props.busy}

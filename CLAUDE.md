@@ -314,6 +314,31 @@ What a ticket *says* is pure logic and therefore lives twice — `shared/src/tic
 `api/core/src/ticket.rs`, same cases both sides. What it *is* on the wire (ESC/POS bytes)
 belongs to the agent alone.
 
+### Printing by hand
+
+The agent is the normal path, but a shop can open before it is set up, so every **sent
+round** carries a Print ticket control on both the waiter's table view and the cashier's
+check. It renders the same `renderTicket` output into a hidden `<Portal>`
+(`web/src/components/PrintSheet.tsx`) and calls `platform.print()`; `@media print` in
+`styles.css` hides `.app` and shows `.print-sheet`. The ESC/POS path is untouched.
+
+Three rules, and they are the same rules the agent obeys:
+
+- **Per round, never per check.** The kitchen has already cooked the earlier rounds.
+- **No auto-print on Send.** A browser print dialog cannot be suppressed, and one that
+  opens by itself mid-order is worse than no printing. Send, then Print, as two taps.
+- **A hand print acks the queued job** — `POST /print-jobs/by-round/:id/printed`, which
+  matches only a `pending` `ticket` job for that round. Printing twice, or printing one
+  the agent already took, is a no-op and not an error, so the two paths can coexist
+  without the kitchen getting the same ticket on paper twice.
+
+`PrintSheet`'s `WORDS` is the browser's copy of the agent's `WORDS` in `agent/src/index.ts`
+— English only, because a kitchen ticket is read by the kitchen and not by the tablet's
+owner. Changing one means changing the other.
+
+Void slips have no manual path. They exist to tell a kitchen that already has paper in
+hand, so a slip nobody is standing at the printer to receive is not worth the control.
+
 ---
 
 ## UX requirements

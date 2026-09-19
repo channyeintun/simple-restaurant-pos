@@ -63,6 +63,7 @@ export const my: Messages = {
    */
   timing: {
     delivered: 'စားပွဲရောက်ပြီး',
+    print: 'စာရွက် ထုတ်မည်',
     due: 'အချိန်တန်ပြီ',
     late: 'နောက်ကျနေသည်',
     minutes: (count) => `${count} မိနစ်`,

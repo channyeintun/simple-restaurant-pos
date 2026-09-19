@@ -81,6 +81,12 @@ pub async fn route(
 
     Some(match (req.method(), rest.as_slice()) {
         (Method::Get, []) => list(req, env, identity).await,
+        // `by-round` sits where a job id would. Job ids are `job_` and twenty
+        // hex characters, so the two cannot be confused — the same arrangement
+        // `/staff/roster` and `/checks/by-table` use.
+        (Method::Post, ["by-round", round_id, "printed"]) => {
+            printed_by_hand(env, identity, round_id).await
+        }
         (Method::Post, [id, "printed"]) => printed(env, identity, id).await,
         (Method::Post, [id, "failed"]) => failed(req, env, identity, id).await,
         (Method::Post, [id, "retry"]) => retry(env, identity, id).await,
@@ -154,6 +160,79 @@ async fn printed(env: &Env, identity: &Identity, job_id: &str) -> ApiResult<Resp
     }
 
     Ok(Response::from_json(&view)?)
+}
+
+/// A person printed this round's ticket from a tablet.
+///
+/// The interim path while there is no agent in the building: a waiter or a
+/// cashier taps Print, the browser renders the same `TicketDoc` the agent would
+/// have been handed, and the operating system's print dialog puts it on paper.
+/// This is what records that it happened.
+///
+/// ## Why a manual print acks the job
+///
+/// Because it is the same fact. A print job means "the kitchen has not been
+/// given this on paper yet", and it has now been given it — by a different
+/// route, but the queue cannot tell the difference and should not try. Leaving
+/// it `pending` would have two consequences and both are wrong: the cashier's
+/// stuck-queue banner would sit amber forever, saying nothing has printed while
+/// somebody is standing at the pass holding the slip; and the day an agent is
+/// finally plugged in, it would find an evening's backlog and print all of it
+/// again.
+///
+/// ## Why it is keyed by round rather than by job
+///
+/// The screens that offer Print are showing a *check*, and a check's rounds
+/// carry round ids. Nothing on the waiter's pane knows a job id, and making it
+/// fetch the queue to find one would be a request per round to learn something
+/// the Worker can look up in the same statement that updates it.
+///
+/// `kind = 'ticket'` and not a void slip: those are queued too, but printing
+/// them by hand is not in scope yet, and quietly acking one would tell the
+/// system a strike-off reached a kitchen that never saw it.
+///
+/// `require_staff`, unlike the agent's acks, which are `require_device`. A
+/// process with no person at it cannot tap Print.
+async fn printed_by_hand(env: &Env, identity: &Identity, round_id: &str) -> ApiResult<Response> {
+    middleware::require_staff(identity)?;
+
+    let at = http::now_iso();
+    let db_handle = crate::env::db(env)?;
+
+    let job: Option<PrintedRow> = db_handle
+        .prepare(
+            "UPDATE print_jobs
+        SET status = 'printed',
+            printed_at = ?2
+        WHERE round_id = ?1
+          AND kind = 'ticket'
+          AND status = 'pending'
+        RETURNING id",
+        )
+        .bind(&[db::text(round_id), db::text(&at)])?
+        .first(None)
+        .await?;
+
+    // Nothing pending is not a failure. The commonest way to get here twice is
+    // a cancelled print dialog followed by a second, successful one — and the
+    // honest answer to "has this reached the kitchen on paper" is still yes.
+    if let Some(job) = &job {
+        create_pub_sub(env)
+            .emit(
+                &[RESTAURANT_CHANNEL],
+                "print_job.printed",
+                &json!({ "jobId": job.id, "roundId": round_id, "at": at }),
+            )
+            .await;
+    }
+
+    Response::empty().map(|response| response.with_status(204)).map_err(http::ApiError::from)
+}
+
+/// The one column the statement above returns.
+#[derive(serde::Deserialize)]
+struct PrintedRow {
+    id: String,
 }
 
 /// The agent saying it could not print.

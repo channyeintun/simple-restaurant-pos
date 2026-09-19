@@ -51,6 +51,11 @@ Getting in is by device claim link, then a staff PIN. See
 - **A printer agent** on a PC in the shop. Cloudflare cannot open a socket to a
   printer on somebody's LAN, so a small node process asks the Worker every three
   seconds whether anything needs printing.
+- **Print ticket**, on every sent round, on both the waiter and the cashier.
+  The agent is the normal path and this is not a replacement for it, but a shop
+  that has not set the agent up yet — or has, and it is down — can still get
+  paper to the pass from whatever the tablet can print to. See
+  [Printing by hand](#printing-by-hand).
 
 All six milestones are in: a waiter sends rounds, the cashier settles them over
 a live stream, the agent prints them, and the whole thing installs on a tablet.
@@ -536,6 +541,37 @@ Point `printerHost` at `127.0.0.1`, send a round from a tablet, and the ESC/POS
 bytes appear — `^[` is ESC, `^]VB^C` is the cut. If they do, the only thing
 between that and paper is the printer's own address.
 
+### Printing by hand
+
+Every sent round carries a **Print ticket** link, on the waiter's table view and
+on the cashier's check. It opens the tablet's own print dialog with that round's
+ticket in it — the same ticket the agent would have produced, from the same
+`renderTicket` in `shared/`, laid out for paper by `@media print` instead of
+ESC/POS. Whatever the tablet can print to, it can now print a ticket to: an
+AirPrint or Mopria printer on the Wi-Fi, a laptop over a share, a PDF to hand to
+somebody.
+
+It exists because the agent is a machine that has to be set up and left running,
+and a shop can open before that is true. Two rules kept it honest:
+
+- **It is per round, never per check**, exactly as the agent is. Reprinting a
+  whole check would send the kitchen food it cooked an hour ago.
+- **There is no auto-print on Send.** A browser cannot print without a dialog,
+  and a dialog that appears on its own in the middle of taking an order is worse
+  than no printing at all. The waiter taps Send, then taps Print.
+
+A successful tap also acks the round's queued ticket — `POST
+/print-jobs/by-round/:id/printed` — so a job printed by hand does not sit
+`pending` waiting for an agent that may never come, and does not print a second
+time on paper if one arrives later. The ack is deliberately forgiving: it
+matches only a `pending` ticket job for that round, so printing a round twice by
+hand, or printing one the agent already handled, is a no-op rather than an
+error. Void slips have no manual path; they are the agent's alone.
+
+The one thing it does not give you is *unattended* printing. Somebody has to be
+looking at a tablet and tap the link, which is why this is the fallback and the
+agent is the system.
+
 ---
 
 ## Staying inside the free tiers
@@ -783,6 +819,7 @@ what it needs on top of that.
 | `GET /print-jobs` | device | the queue, with each ticket already rendered |
 | `POST /print-jobs/:id/printed` · `/failed` | device | the agent's acks |
 | `POST /print-jobs/:id/retry` | cashier/admin | the banner's Retry |
+| `POST /print-jobs/by-round/:id/printed` | staff | the ack for a ticket printed by hand |
 | `GET /devices` · `POST /devices` · `/:id/claim-link` · `/:id/revoke` | admin | the tablets |
 | `GET /reports/sales/today` | admin | the one report there is |
 

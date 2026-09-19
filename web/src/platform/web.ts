@@ -534,6 +534,9 @@ export const webPlatform: Platform = {
   navigation,
   viewTransition,
   visibility,
+  print() {
+    window.print();
+  },
   registerServiceWorker,
   install,
   onAppUpdated,

@@ -75,6 +75,12 @@ export const en = {
   timing: {
     /** The button a waiter taps, and the badge it leaves behind. */
     delivered: 'Delivered',
+    /*
+     * The button that puts a kitchen ticket on paper from a tablet, while
+     * there is no printer agent in the building. The *label* is translated;
+     * what lands on the paper is not — see `components/PrintSheet.tsx`.
+     */
+    print: 'Print ticket',
     due: 'Due now',
     late: 'Late',
     minutes: (count: number) => `${count} min`,

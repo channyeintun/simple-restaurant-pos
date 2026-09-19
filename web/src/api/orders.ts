@@ -108,6 +108,28 @@ export const deliverRound = (checkId: string, roundId: string): Promise<CheckDet
   );
 
 /**
+ * Record that a round's ticket was printed by hand.
+ *
+ * Called after the browser's print dialog closes. It acks the round's pending
+ * `ticket` job, which is the same fact the agent's ack records by a different
+ * route — the kitchen has been given this on paper — and the queue cannot tell
+ * the difference.
+ *
+ * It matters because of what happens if it is skipped. The job would sit
+ * `pending` forever, so the cashier's stuck-queue banner would stay amber while
+ * somebody is standing at the pass holding the slip; and the day an agent is
+ * finally plugged in, it would find the evening's backlog and print all of it
+ * again.
+ *
+ * There is no success signal from `print()` — it returns the same whether the
+ * dialog was used or cancelled — so this can mark a cancelled print as printed.
+ * That is the accepted trade: the round stays on screen and Print can be tapped
+ * again, and the Worker's guard makes the second ack a no-op.
+ */
+export const markRoundPrinted = (roundId: string): Promise<void> =>
+  post<void>(`/print-jobs/by-round/${roundId}/printed`);
+
+/**
  * Take the money and close the check.
  *
  * `expectedTotalMinor` is what the cashier was looking at when they took it. If

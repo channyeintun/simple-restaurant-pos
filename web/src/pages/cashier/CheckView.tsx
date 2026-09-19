@@ -3,7 +3,8 @@ import { useNavigate, useParams } from '@solidjs/router';
 import { useQueryClient } from '@tanstack/solid-query';
 import { For, Show, createSignal } from 'solid-js';
 import { ApiError } from '../../api/client.js';
-import { payCheck, voidItem } from '../../api/orders.js';
+import { markRoundPrinted, payCheck, voidItem } from '../../api/orders.js';
+import { PrintSheet, createTicketPrinter, ticketForRound } from '../../components/PrintSheet.js';
 import { Button, Chip, ChipSet, ConfirmButton, Dialog, ErrorBanner, Spinner } from '../../components/ui.js';
 import { queryKeys, useCheck } from '../../lib/queries.js';
 import { useApp } from '../../state/app.js';
@@ -44,6 +45,26 @@ export function CashierCheck() {
   const [error, setError] = createSignal<string | null>(null);
   const [paying, setPaying] = createSignal(false);
   const [method, setMethod] = createSignal<PaymentMethod>('cash');
+  const printer = createTicketPrinter();
+
+  /**
+   * Print a round's kitchen ticket from the till.
+   *
+   * The same button the waiter has, on the screen that is actually next to a
+   * printer. While there is no agent, this is how a round that the waiter could
+   * not print — a tablet with nothing to print to, a slip that jammed — still
+   * reaches the kitchen: the cashier opens the check and prints it.
+   *
+   * The ack is fired and forgotten for the same reason as on the waiter's pane:
+   * it is bookkeeping, and somebody holding a slip should not be shown an error
+   * about it.
+   */
+  const printRound = (round: CheckDetail['rounds'][number]) => {
+    const current = check.data;
+    if (!current) return;
+    printer.print(ticketForRound(current, round, app.config().tzOffsetMinutes));
+    void markRoundPrinted(round.id).catch(() => {});
+  };
 
   /**
    * Adopt a check the server has just handed back.
@@ -137,6 +158,7 @@ export function CashierCheck() {
             <Show when={error()}>{(message) => <ErrorBanner>{message()}</ErrorBanner>}</Show>
 
             <div style={{ flex: '1 1 auto', 'min-height': '0', overflow: 'auto' }}>
+              <PrintSheet doc={printer.doc()} />
               <For each={detail().rounds}>
                 {(round) => (
                   <div class="sent-round">
@@ -144,6 +166,15 @@ export function CashierCheck() {
                       <span>{m().waiter.round(round.seq)}</span>
                       <span>{m().waiter.sentAt(app.clock(round.sentAt))}</span>
                       <span>{round.sentByName}</span>
+                      {/*
+                        In the header rather than beside the lines: on this
+                        screen the rounds are history the cashier is reading,
+                        and Print is about the round as a whole rather than
+                        about any line on it.
+                      */}
+                      <Button variant="text" onClick={() => printRound(round)}>
+                        {m().timing.print}
+                      </Button>
                     </div>
                     <For each={round.items}>
                       {(item) => (

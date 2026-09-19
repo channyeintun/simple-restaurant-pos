@@ -221,6 +221,17 @@ export interface Platform {
   navigation: Navigation;
   viewTransition: ViewTransition;
   visibility: Visibility;
+  /**
+   * Hand the page to the operating system's print dialog.
+   *
+   * Here for the same reason everything else is — it is `window.print` and
+   * components do not touch `window` — and it is worth knowing what it can and
+   * cannot tell you: **nothing**. It blocks until the dialog closes and then
+   * returns, identically whether the person printed, saved a PDF or hit
+   * Cancel. `afterprint` fires on cancel too in several browsers, so there is
+   * no success signal to wait for and callers must not pretend otherwise.
+   */
+  print(): void;
   /** Registers the service worker. Resolves false where unsupported. */
   registerServiceWorker(): Promise<boolean>;
   install: Install;
