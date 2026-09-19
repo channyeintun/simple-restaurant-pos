@@ -354,21 +354,45 @@ The reply is `{"token":"…","identity":{…}}`. Take the `token`. The link is
 single-use and is spent by that call, so if you also open it in a browser one of
 the two will fail — mint a second link if you need both.
 
-**5. The config, and something to keep it running.** Copy
-`agent/agent.config.example.json` to `agent/agent.config.json` — git-ignored,
-because it holds a device token and the address of a printer on somebody's LAN —
-fill in the four values, and run it:
+**5. Put the agent on it.** You do **not** need to clone this repo, and you do
+not need `npm install`. The agent is one TypeScript file that imports nothing
+but `node:` builtins — `fs`, `net`, `timers`, `path`, `url` — so the whole
+install is a file, a config beside it, and node.
 
 ```sh
-npm start -w @pos/agent
+# On the machine that will drive the printer. Node 22.6+ is the only prerequisite.
+mkdir -p ~/pos-printer && cd ~/pos-printer
+
+curl -O https://raw.githubusercontent.com/channyeintun/simple-restaurant-pos/main/agent/src/index.ts
+
+cat > agent.config.json <<'JSON'
+{
+  "apiUrl": "https://restaurant-pos-api.chanyeintun.workers.dev",
+  "deviceToken": "PASTE_THE_TOKEN_FROM_STEP_4",
+  "printerHost": "192.168.1.50",
+  "printerPort": 9100
+}
+JSON
+
+node --experimental-strip-types index.ts
 ```
 
-It prints what it is configured with, then polls every three seconds. A ticket
-logs one line; a failure logs the printer's own words.
+That is the whole of it. It prints what it is configured with, then polls: a
+ticket logs one line, a failure logs the printer's own words.
 
-In service it wants a supervisor, because the agent exits non-zero on a fatal
-error — a revoked or expired token — and retries everything else forever. On a
-Linux box, a unit like this is enough:
+Cloning the repo works too and is the better choice if you want `git pull` to
+update it — but it brings a Rust toolchain's worth of workspace onto a machine
+whose only job is to copy bytes to a socket. Two files is the smaller thing to
+go wrong at eight in the evening, and updating is the same `curl` again.
+
+The config is not in this repository and must not be: it holds a device token
+and the address of a printer on somebody's LAN. `agent/agent.config.example.json`
+is the committed copy of its shape, and `agent/agent.config.json` is git-ignored
+if you do work inside a clone.
+
+**Keeping it running.** In service it wants a supervisor, because the agent
+exits non-zero on a fatal error — a revoked or expired token — and retries
+everything else forever. On a Linux box, a unit like this is enough:
 
 ```ini
 [Unit]
@@ -376,13 +400,22 @@ Description=Restaurant POS printer agent
 After=network-online.target
 
 [Service]
-WorkingDirectory=/opt/simple-restaurant-pos
-ExecStart=/usr/bin/npm start -w @pos/agent
+User=pi
+WorkingDirectory=/home/pi/pos-printer
+ExecStart=/usr/bin/node --experimental-strip-types index.ts
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
+```
+
+Save it as `/etc/systemd/system/pos-printer.service`, then:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now pos-printer
+journalctl -u pos-printer -f
 ```
 
 `Restart=always` rather than `on-failure`: the two ways this process ends are a
